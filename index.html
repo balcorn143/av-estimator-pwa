@@ -8,15 +8,15 @@
     <!-- PWA Meta Tags -->
     <meta name="description" content="Professional Audio/Visual Project Estimation Tool">
     <meta name="theme-color" content="#1d9bf0">
-    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="AV Estimator">
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
     
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -29,14 +29,6 @@
 </head>
 <body>
     <div id="root"></div>
-    <div id="av-debug" style="position:fixed;bottom:0;left:0;right:0;background:#300;color:#f88;padding:10px;font-family:monospace;font-size:11px;max-height:200px;overflow:auto;z-index:99999;white-space:pre-wrap;display:none"></div>
-    <script>
-    window.__avDebug = document.getElementById('av-debug');
-    window.__avLog = function(msg) { window.__avDebug.style.display='block'; window.__avDebug.textContent += msg + '\n'; };
-    window.onerror = function(m,u,l,c,e) { window.__avLog('ERROR: ' + m + ' L' + l + ':' + c); if(e&&e.stack) window.__avLog(e.stack); };
-    window.addEventListener('unhandledrejection', function(e) { window.__avLog('REJECT: ' + e.reason); if(e.reason&&e.reason.stack) window.__avLog(e.reason.stack); });
-    var _ce = console.error; console.error = function() { _ce.apply(console, arguments); window.__avLog('ERR: ' + Array.from(arguments).map(function(a){try{return typeof a==='object'?JSON.stringify(a):String(a)}catch(x){return String(a)}}).join(' ')); };
-    </script>
     <script type="text/babel">
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
@@ -2200,7 +2192,6 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                     )}
                 </div>
             )}
-        </div>
         </div>
     );
 }
@@ -5197,27 +5188,7 @@ function App() {
     );
 }
 
-// Error boundary to catch render errors
-class ErrorBoundary extends React.Component {
-    constructor(props) { super(props); this.state = { hasError: false, error: null }; }
-    static getDerivedStateFromError(error) { return { hasError: true, error }; }
-    componentDidCatch(error, info) {
-        window.__avLog('REACT RENDER ERROR: ' + error.message);
-        window.__avLog('Component stack: ' + info.componentStack);
-        window.__avLog('JS stack: ' + error.stack);
-    }
-    render() {
-        if (this.state.hasError) {
-            return <div style={{padding:'40px',color:'#f88',backgroundColor:'#200',fontFamily:'monospace'}}>
-                <h2>App crashed!</h2>
-                <pre style={{whiteSpace:'pre-wrap',marginTop:'16px'}}>{this.state.error?.message}{'\n\n'}{this.state.error?.stack}</pre>
-            </div>;
-        }
-        return this.props.children;
-    }
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>);
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {
