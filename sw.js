@@ -1,4 +1,4 @@
-const CACHE_NAME = 'av-estimator-v1';
+const CACHE_NAME = 'av-estimator-v2';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -29,34 +29,31 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Fetch - network first, fall back to cache
+// Fetch - network first for HTML/JSON, cache first for static assets
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
-  
-  // For JSON data files, always try network first (to get latest catalog/packages)
-  if (url.pathname.endsWith('.json')) {
+
+  // For HTML and JSON files, always try network first (to get latest code/data)
+  if (url.pathname.endsWith('.html') || url.pathname.endsWith('.json') || url.pathname.endsWith('/')) {
     event.respondWith(
       fetch(event.request)
         .then(response => {
-          // Cache the fresh response
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
           return response;
         })
         .catch(() => {
-          // Offline - return cached version
           return caches.match(event.request);
         })
     );
     return;
   }
-  
-  // For other assets, try cache first then network
+
+  // For static assets (icons, manifest, sw), try cache first then network
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
       return fetch(event.request).then(response => {
-        // Cache new assets
         if (response.ok) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
