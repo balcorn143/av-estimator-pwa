@@ -17,6 +17,7 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script crossorigin src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -367,6 +368,93 @@ function filterLocations(locations, searchTerm) {
     };
     
     return filterTree(locations);
+}
+
+// Generate Esticom-compatible BoM workbook for a single location
+function generateEsticomWorkbook(location) {
+    const XLSX = window.XLSX;
+    const wb = XLSX.utils.book_new();
+
+    // Consolidate all items + accessories into unique part numbers
+    const partMap = {};
+    for (const item of (location.items || [])) {
+        const key = item.partNumber || (item.manufacturer + '|' + item.model);
+        if (partMap[key]) {
+            partMap[key].qty += (item.qty || 0);
+        } else {
+            partMap[key] = {
+                qty: item.qty || 0,
+                name: item.description || ((item.manufacturer || '') + ' ' + (item.model || '')).trim(),
+                manufacturer: item.manufacturer || '',
+                supplier: item.vendor || '',
+                partNumber: item.partNumber || '',
+                uom: item.uom || 'EA',
+                unitCost: item.unitCost || 0
+            };
+        }
+        // Include accessories as their own line items
+        if (item.accessories) {
+            for (const acc of item.accessories) {
+                const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                if (partMap[accKey]) {
+                    partMap[accKey].qty += (acc.qty || 0);
+                } else {
+                    partMap[accKey] = {
+                        qty: acc.qty || 0,
+                        name: acc.description || ((acc.manufacturer || '') + ' ' + (acc.model || '')).trim(),
+                        manufacturer: acc.manufacturer || '',
+                        supplier: acc.vendor || '',
+                        partNumber: acc.partNumber || '',
+                        uom: acc.uom || 'EA',
+                        unitCost: acc.unitCost || 0
+                    };
+                }
+            }
+        }
+    }
+
+    // Build array-of-arrays matching Esticom template layout
+    const data = [];
+    data.push([]);  // Row 1: empty
+    data.push(['BILL OF MATERIALS (Import Template)', '', '', '', '', '', '']);  // Row 2: title
+    data.push([]);  // Row 3: empty
+    data.push([]);  // Row 4: empty
+    data.push(['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost']);  // Row 5: headers
+    data.push([]);  // Row 6: blank separator
+
+    // Row 7+: consolidated data rows
+    for (const part of Object.values(partMap)) {
+        data.push([
+            part.qty,
+            part.name,
+            part.manufacturer,
+            part.supplier,
+            part.partNumber,
+            part.uom,
+            part.unitCost
+        ]);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(data);
+
+    // Merge title row A2:G2
+    ws['!merges'] = [
+        { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }
+    ];
+
+    // Column widths matching Esticom template
+    ws['!cols'] = [
+        { wch: 5 },    // A: QTY
+        { wch: 30 },   // B: Name
+        { wch: 14 },   // C: Manufacturer
+        { wch: 12 },   // D: Supplier
+        { wch: 13 },   // E: Part Number
+        { wch: 10 },   // F: UOM
+        { wch: 10 },   // G: Item Cost
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Bill of materials');
+    return wb;
 }
 
 function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onDuplicate, onMoveUp, onMoveDown, onPromote, onDemote, multiSelect, onMultiSelectToggle, depth = 0, searchTerm, expandedState, onToggleExpand }) {
@@ -4168,6 +4256,36 @@ function App() {
         setTimeout(() => setToast(null), 2000);
     };
 
+    // Export to Esticom - one xlsx per location
+    const exportToEsticom = () => {
+        const XLSX = window.XLSX;
+        if (!XLSX) {
+            showToast('Export library not loaded. Check your internet connection.');
+            return;
+        }
+
+        const locationsWithItems = getLocationsWithItems(project.locations);
+
+        if (locationsWithItems.length === 0) {
+            showToast('No locations with components to export');
+            return;
+        }
+
+        const sanitizeFilename = (str) => {
+            return str.replace(/[<>:"/\\|?*]/g, '-').replace(/\s*>\s*/g, ' - ').trim();
+        };
+
+        locationsWithItems.forEach((location, index) => {
+            setTimeout(() => {
+                const wb = generateEsticomWorkbook(location);
+                const filename = sanitizeFilename(location.path || location.name) + '.xlsx';
+                XLSX.writeFile(wb, filename);
+            }, index * 150);
+        });
+
+        showToast(`Exporting ${locationsWithItems.length} Esticom file${locationsWithItems.length > 1 ? 's' : ''}...`);
+    };
+
     // Global keyboard shortcuts
     useEffect(() => {
         const handleKeyDown = (e) => {
@@ -5024,13 +5142,24 @@ function App() {
                     <section style={{ ...styles.content, marginLeft: 0 }}>
                         <h2 style={{ margin: '0 0 24px 0', fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Download /> Reports & Exports</h2>
                         <div style={{ display: 'grid', gap: '16px', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
-                            {[{ t: 'Consolidated BOM', d: 'Single BOM with all components.' }, { t: 'Export to Esticom', d: 'Export as Esticom-compatible files.' }, { t: 'Project Summary', d: 'Cost and labor by location.' }].map((r, i) => (
-                                <div key={i} style={styles.card}>
-                                    <div style={styles.cardTitle}>{r.t}</div>
-                                    <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>{r.d}</p>
-                                    <button style={styles.button('primary')}><Icons.Download /> Generate</button>
-                                </div>
-                            ))}
+                            {/* Export to Esticom - Active */}
+                            <div style={styles.card}>
+                                <div style={styles.cardTitle}>Export to Esticom</div>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Export each location as an Esticom-compatible .xlsx BOM file.</p>
+                                <button style={styles.button('primary')} onClick={exportToEsticom}><Icons.Download /> Export</button>
+                            </div>
+                            {/* Consolidated BOM - Coming Soon */}
+                            <div style={{ ...styles.card, opacity: 0.5 }}>
+                                <div style={styles.cardTitle}>Consolidated BOM</div>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Single BOM with all components across locations.</p>
+                                <button style={{ ...styles.button('primary'), cursor: 'not-allowed' }} disabled><Icons.Download /> Coming Soon</button>
+                            </div>
+                            {/* Project Summary - Coming Soon */}
+                            <div style={{ ...styles.card, opacity: 0.5 }}>
+                                <div style={styles.cardTitle}>Project Summary</div>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Cost and labor summary by location.</p>
+                                <button style={{ ...styles.button('primary'), cursor: 'not-allowed' }} disabled><Icons.Download /> Coming Soon</button>
+                            </div>
                         </div>
                     </section>
                 )}
