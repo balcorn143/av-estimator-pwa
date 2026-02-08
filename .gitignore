@@ -2,3 +2,6 @@
 *.swp
 *.swo
 *~
+convert-xlsx.py
+test-project.json
+load-test-data.html

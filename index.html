@@ -280,6 +280,14 @@ function formatCurrency(amount) {
 
 function formatHours(hours) { return hours >= 100 ? hours.toFixed(0) + 'h' : hours.toFixed(1) + 'h'; }
 
+function fmtCost(amount) {
+    return '$' + Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtQty(n) { return Number(n || 0).toLocaleString('en-US'); }
+function fmtHrs(hours) {
+    return Number(hours || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + 'h';
+}
+
 // Get the path to a location (returns array of ancestor names, not including the location itself)
 function getLocationPath(locations, targetId, currentPath = []) {
     for (const loc of locations) {
@@ -560,7 +568,7 @@ function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onD
                             )}
                             {totals.itemCount > 0 && !isHovered && !isEditing && (
                                 <div style={styles.treeItemTotals}>
-                                    <span style={{ color: '#00ba7c' }}>{formatCurrency(totals.cost)}</span>
+                                    <span style={{ color: '#00ba7c' }}>{fmtCost(totals.cost)}</span>
                                     <span style={{ color: '#1d9bf0' }}>{formatHours(totals.labor)}</span>
                                 </div>
                             )}
@@ -922,7 +930,7 @@ function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
                                             <div style={{ fontSize: '13px', color: '#8b98a5', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.description}</div>
                                         </div>
                                         <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                            <div style={{ fontWeight: '600', color: '#00ba7c' }}>${item.unitCost?.toFixed(2)}</div>
+                                            <div style={{ fontWeight: '600', color: '#00ba7c' }}>{fmtCost(item.unitCost)}</div>
                                             <div style={{ fontSize: '12px', color: '#8b98a5' }}>{item.laborHrsPerUnit}h labor</div>
                                         </div>
                                     </div>
@@ -971,7 +979,7 @@ function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
                                             <span style={{ fontWeight: '600' }}>{pkg.name}</span>
                                             <span style={styles.badge('green')}>{pkg.items?.length || 0} items</span>
                                         </div>
-                                        <div style={{ fontWeight: '600', color: '#00ba7c' }}>${cost.toFixed(2)}</div>
+                                        <div style={{ fontWeight: '600', color: '#00ba7c' }}>{fmtCost(cost)}</div>
                                     </div>
                                 </div>
                             );
@@ -1187,7 +1195,7 @@ function DeleteConfirmModal({ locations, onClose, onDelete }) {
                         <div style={{ color: '#f87171', fontWeight: '600', marginBottom: '8px' }}>⚠️ This will also delete:</div>
                         <ul style={{ color: '#fca5a5', fontSize: '14px', marginLeft: '20px' }}>
                             {totalStats.subCount > 0 && <li>{totalStats.subCount} sublocation{totalStats.subCount > 1 ? 's' : ''}</li>}
-                            {totalStats.itemCount > 0 && <li>{totalStats.itemCount} component{totalStats.itemCount > 1 ? 's' : ''} (${totalStats.cost.toFixed(2)})</li>}
+                            {totalStats.itemCount > 0 && <li>{totalStats.itemCount} component{totalStats.itemCount > 1 ? 's' : ''} ({fmtCost(totalStats.cost)})</li>}
                         </ul>
                     </div>
                 )}
@@ -1290,7 +1298,7 @@ function AccessoryPromptModal({ component, accessories, qty, catalog, onConfirm,
                                     disabled={!acc.included}
                                 />
                                 <div style={{ width: '80px', textAlign: 'right', color: acc.included ? '#00ba7c' : '#6e767d' }}>
-                                    ${(acc.qty * catalogItem.unitCost).toFixed(2)}
+                                    {fmtCost(acc.qty * catalogItem.unitCost)}
                                 </div>
                             </div>
                         );
@@ -1299,7 +1307,7 @@ function AccessoryPromptModal({ component, accessories, qty, catalog, onConfirm,
                 
                 {totalAccessoryCost > 0 && (
                     <div style={{ fontSize: '13px', color: '#8b98a5', marginBottom: '16px' }}>
-                        Accessories total: <span style={{ color: '#00ba7c', fontWeight: '600' }}>${totalAccessoryCost.toFixed(2)}</span>
+                        Accessories total: <span style={{ color: '#00ba7c', fontWeight: '600' }}>{fmtCost(totalAccessoryCost)}</span>
                     </div>
                 )}
                 
@@ -1442,7 +1450,7 @@ function AddAccessoryModal({ item, catalog, onConfirm, onClose }) {
                                     <div style={{ fontWeight: '500' }}>{c.manufacturer} <span style={{ color: '#1d9bf0' }}>{c.model}</span></div>
                                     <div style={{ fontSize: '12px', color: '#6e767d' }}>{c.description}</div>
                                 </div>
-                                <div style={{ color: '#00ba7c', fontWeight: '600' }}>${c.unitCost?.toFixed(2)}</div>
+                                <div style={{ color: '#00ba7c', fontWeight: '600' }}>{fmtCost(c.unitCost)}</div>
                             </div>
                         </div>
                     )) : search.length >= 1 ? (
@@ -1621,13 +1629,13 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
             case 'description':
                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{item.description}{hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}</td>;
             case 'unitCost':
-                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>${(item.unitCost || 0).toFixed(2)}</td>;
+                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{fmtCost(item.unitCost)}</td>;
             case 'unitLabor':
-                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{(item.laborHrsPerUnit || 0).toFixed(2)}h</td>;
+                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{fmtHrs(item.laborHrsPerUnit)}</td>;
             case 'extCost':
-                return <td key={col.id} style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: compactMode ? '11px' : '12px' }}>${itemTotal.cost.toFixed(2)}</td>;
+                return <td key={col.id} style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: compactMode ? '11px' : '12px' }}>{fmtCost(itemTotal.cost)}</td>;
             case 'extLabor':
-                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{itemTotal.labor.toFixed(2)}h</td>;
+                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{fmtHrs(itemTotal.labor)}</td>;
             default:
                 return <td key={col.id} style={tdStyle}></td>;
         }
@@ -1653,14 +1661,14 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
             case 'description':
                 return <td key={col.id} style={tdStyle}>{acc.description}</td>;
             case 'unitCost':
-                return <td key={col.id} style={tdStyle}>${(acc.unitCost || 0).toFixed(2)}</td>;
+                return <td key={col.id} style={tdStyle}>{fmtCost(acc.unitCost)}</td>;
             case 'unitLabor':
-                return <td key={col.id} style={tdStyle}>{(acc.laborHrsPerUnit || 0).toFixed(2)}h</td>;
+                return <td key={col.id} style={tdStyle}>{fmtHrs(acc.laborHrsPerUnit)}</td>;
             case 'extCost':
-                return <td key={col.id} style={{ ...tdStyle, color: '#4a6e4a' }}>${((acc.qty || 0) * (acc.unitCost || 0)).toFixed(2)}</td>;
+                return <td key={col.id} style={{ ...tdStyle, color: '#4a6e4a' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>;
             case 'extLabor':
                 return <td key={col.id} style={tdStyle}>
-                    <span>{((acc.qty || 0) * (acc.laborHrsPerUnit || 0)).toFixed(2)}h</span>
+                    <span>{fmtHrs((acc.qty || 0) * (acc.laborHrsPerUnit || 0))}</span>
                     <button style={{ ...styles.iconButton, marginLeft: '4px', color: '#4a5568', padding: '2px' }} onClick={() => removeAccessory(itemIdx, accIdx)}><Icons.X /></button>
                 </td>;
             default:
@@ -1692,10 +1700,10 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
             return <td key={col.id} style={tdStyle}></td>;
         }
         if (col.id === 'extCost') {
-            return <td key={col.id} style={{ ...tdStyle, color: '#00ba7c', fontWeight: '700' }}>${pkg.cost.toFixed(2)}</td>;
+            return <td key={col.id} style={{ ...tdStyle, color: '#00ba7c', fontWeight: '700' }}>{fmtCost(pkg.cost)}</td>;
         }
         if (col.id === 'extLabor') {
-            return <td key={col.id} style={{ ...tdStyle, fontWeight: '600' }}>{pkg.labor.toFixed(2)}h</td>;
+            return <td key={col.id} style={{ ...tdStyle, fontWeight: '600' }}>{fmtHrs(pkg.labor)}</td>;
         }
         return <td key={col.id} style={tdStyle}></td>;
     };
@@ -1931,13 +1939,13 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                 <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
                     <div style={{ backgroundColor: '#1a2e1a', padding: '16px 20px', borderRadius: '12px', border: '1px solid #2d4a2d' }}>
                         <div style={{ fontSize: '12px', color: '#6e9e6e', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total Material</div>
-                        <div style={{ fontSize: '24px', fontWeight: '700', color: '#00ba7c' }}>${directCost.toFixed(2)}</div>
-                        {subCount > 0 && <div style={{ fontSize: '12px', color: '#6e9e6e', marginTop: '4px' }}>+${(totals.cost - directCost).toFixed(2)} sublocations</div>}
+                        <div style={{ fontSize: '24px', fontWeight: '700', color: '#00ba7c' }}>{fmtCost(directCost)}</div>
+                        {subCount > 0 && <div style={{ fontSize: '12px', color: '#6e9e6e', marginTop: '4px' }}>+{fmtCost(totals.cost - directCost)} sublocations</div>}
                     </div>
                     <div style={{ backgroundColor: '#1a2a3e', padding: '16px 20px', borderRadius: '12px', border: '1px solid #2d4a6e' }}>
                         <div style={{ fontSize: '12px', color: '#6e8eae', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total Labor</div>
-                        <div style={{ fontSize: '24px', fontWeight: '700', color: '#1d9bf0' }}>{directLabor.toFixed(1)} hrs</div>
-                        {subCount > 0 && <div style={{ fontSize: '12px', color: '#6e8eae', marginTop: '4px' }}>+{(totals.labor - directLabor).toFixed(1)} hrs sublocations</div>}
+                        <div style={{ fontSize: '24px', fontWeight: '700', color: '#1d9bf0' }}>{fmtHrs(directLabor)}</div>
+                        {subCount > 0 && <div style={{ fontSize: '12px', color: '#6e8eae', marginTop: '4px' }}>+{fmtHrs(totals.labor - directLabor)} sublocations</div>}
                     </div>
                     <div style={{ backgroundColor: '#1a1f26', padding: '16px 20px', borderRadius: '12px', border: '1px solid #2f3336' }}>
                         <div style={{ fontSize: '12px', color: '#6e767d', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Line Items</div>
@@ -1957,7 +1965,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                 <div key={child.id} style={{ backgroundColor: '#0f1419', padding: '12px', borderRadius: '8px', border: '1px solid #2f3336' }}>
                                     <div style={{ fontWeight: '600', marginBottom: '4px' }}>{child.name}</div>
                                     <div style={{ fontSize: '12px', color: '#6e767d', display: 'flex', gap: '12px' }}>
-                                        <span style={{ color: '#00ba7c' }}>{formatCurrency(t.cost)}</span>
+                                        <span style={{ color: '#00ba7c' }}>{fmtCost(t.cost)}</span>
                                         <span style={{ color: '#1d9bf0' }}>{formatHours(t.labor)}</span>
                                         <span>{t.itemCount} items</span>
                                     </div>
@@ -2131,8 +2139,8 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                             <tfoot>
                                 <tr style={{ backgroundColor: '#151a21' }}>
                                     <td colSpan={columns.length - 2} style={{ ...styles.td, fontWeight: '700' }}>TOTAL (this location)</td>
-                                    <td style={{ ...styles.td, fontWeight: '700', color: '#00ba7c' }}>${directCost.toFixed(2)}</td>
-                                    <td style={{ ...styles.td, fontWeight: '700', color: '#1d9bf0' }}>{directLabor.toFixed(2)}h</td>
+                                    <td style={{ ...styles.td, fontWeight: '700', color: '#00ba7c' }}>{fmtCost(directCost)}</td>
+                                    <td style={{ ...styles.td, fontWeight: '700', color: '#1d9bf0' }}>{fmtHrs(directLabor)}</td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -2507,12 +2515,12 @@ function CatalogConflictModal({ conflicts, onResolve, onClose }) {
                                                 <td style={{ padding: '6px 8px', borderBottom: '1px solid #21262d', color: '#8b98a5', textTransform: 'capitalize' }}>{field.replace(/([A-Z])/g, ' $1')}</td>
                                                 <td style={{ padding: '6px 8px', borderBottom: '1px solid #21262d', backgroundColor: resolution === 'local' ? '#1a3d2e' : 'transparent' }}>
                                                     {typeof conflict.local[field] === 'boolean' ? (conflict.local[field] ? 'Yes' : 'No') : 
-                                                     field === 'unitCost' ? `$${conflict.local[field]?.toFixed(2)}` : 
+                                                     field === 'unitCost' ? fmtCost(conflict.local[field]) : 
                                                      String(conflict.local[field] || '-')}
                                                 </td>
                                                 <td style={{ padding: '6px 8px', borderBottom: '1px solid #21262d', backgroundColor: resolution === 'remote' ? '#1a3d2e' : 'transparent' }}>
                                                     {typeof conflict.remote[field] === 'boolean' ? (conflict.remote[field] ? 'Yes' : 'No') : 
-                                                     field === 'unitCost' ? `$${conflict.remote[field]?.toFixed(2)}` : 
+                                                     field === 'unitCost' ? fmtCost(conflict.remote[field]) : 
                                                      String(conflict.remote[field] || '-')}
                                                 </td>
                                             </tr>
@@ -2712,7 +2720,7 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, c
                                     <td style={tdStyle}>
                                         <span style={{ ...styles.badge('blue'), fontSize: compactMode ? '10px' : '12px', padding: compactMode ? '2px 6px' : '3px 10px' }}>{item.category}</span>
                                     </td>
-                                    <td style={{ ...tdStyle, color: '#00ba7c' }}>${item.unitCost?.toFixed(2)}</td>
+                                    <td style={{ ...tdStyle, color: '#00ba7c' }}>{fmtCost(item.unitCost)}</td>
                                     <td style={tdStyle}>{item.laborHrsPerUnit}h</td>
                                     <td style={tdStyle}>
                                         <div style={{ display: 'flex', gap: '4px' }}>
@@ -2792,12 +2800,12 @@ function PackagesView({ packages, onAdd }) {
                     <div key={pkg.id} style={{ ...styles.card, borderLeft: `4px solid ${c.b}` }}>
                         <div style={{ ...styles.cardTitle, marginBottom: pkg.items?.length ? '16px' : 0 }}>
                             <Icons.Package />{pkg.name}<span style={styles.badge('green')}>{pkg.items?.length || 0} items</span>
-                            <span style={{ marginLeft: 'auto', color: '#00ba7c', fontWeight: '600' }}>${cost.toFixed(2)}</span>
+                            <span style={{ marginLeft: 'auto', color: '#00ba7c', fontWeight: '600' }}>{fmtCost(cost)}</span>
                         </div>
                         {pkg.items?.length > 0 && (
                             <table style={styles.table}>
                                 <thead><tr><th style={styles.th}>Qty</th><th style={styles.th}>Component</th><th style={styles.th}>Cost</th></tr></thead>
-                                <tbody>{pkg.items.map((item, i) => (<tr key={i}><td style={styles.td}>{item.qty}</td><td style={styles.td}>{item.manufacturer} <strong>{item.model}</strong></td><td style={{ ...styles.td, color: '#00ba7c' }}>${(item.qty * (item.unitCost || 0)).toFixed(2)}</td></tr>))}</tbody>
+                                <tbody>{pkg.items.map((item, i) => (<tr key={i}><td style={styles.td}>{item.qty}</td><td style={styles.td}>{item.manufacturer} <strong>{item.model}</strong></td><td style={{ ...styles.td, color: '#00ba7c' }}>{fmtCost(item.qty * (item.unitCost || 0))}</td></tr>))}</tbody>
                             </table>
                         )}
                     </div>
@@ -3137,8 +3145,8 @@ function AllLocationsView({
                             </div>
                             <div style={{ display: 'flex', gap: compactMode ? '10px' : '16px', alignItems: 'center', flexShrink: 0 }}>
                                 <span style={{ ...styles.badge('blue'), fontSize: compactMode ? '10px' : '11px', padding: compactMode ? '2px 6px' : '3px 10px' }}>{totals.itemCount} items</span>
-                                <span style={{ color: '#00ba7c', fontWeight: '600', fontSize: compactMode ? '12px' : '14px' }}>${totals.cost.toFixed(2)}</span>
-                                <span style={{ color: '#8b98a5', fontSize: compactMode ? '11px' : '13px' }}>{totals.labor.toFixed(1)}h</span>
+                                <span style={{ color: '#00ba7c', fontWeight: '600', fontSize: compactMode ? '12px' : '14px' }}>{fmtCost(totals.cost)}</span>
+                                <span style={{ color: '#8b98a5', fontSize: compactMode ? '11px' : '13px' }}>{fmtHrs(totals.labor)}</span>
                             </div>
                         </div>
                         
@@ -3231,8 +3239,8 @@ function AllLocationsView({
                                                                 <span style={{ ...styles.badge('green'), marginLeft: '8px', fontSize: '10px' }}>{pkg.itemCount} items</span>
                                                             </td>
                                                             <td style={tdStyle}></td>
-                                                            <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>${pkg.cost.toFixed(2)}</td>
-                                                            <td style={tdStyle}>{pkg.labor.toFixed(2)}h</td>
+                                                            <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
+                                                            <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
                                                         </tr>
                                                         
                                                         {/* Package items */}
@@ -3271,9 +3279,9 @@ function AllLocationsView({
                                                                             {item.description}
                                                                             {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
                                                                         </td>
-                                                                        <td style={{ ...tdStyle, fontSize: '12px' }}>${(item.unitCost || 0).toFixed(2)}</td>
-                                                                        <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>${itemTotal.cost.toFixed(2)}</td>
-                                                                        <td style={{ ...tdStyle, fontSize: '12px' }}>{itemTotal.labor.toFixed(2)}h</td>
+                                                                        <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtCost(item.unitCost)}</td>
+                                                                        <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
+                                                                        <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
                                                                     </tr>
                                                                     
                                                                     {/* Accessories */}
@@ -3291,10 +3299,10 @@ function AllLocationsView({
                                                                             <td style={{ ...tdStyle, fontSize: '11px', color: '#6e767d' }}>└ {acc.manufacturer}</td>
                                                                             <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.model}</td>
                                                                             <td style={{ ...tdStyle, fontSize: '11px', color: '#6e767d' }}>{acc.description}</td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#6e767d' }}>${(acc.unitCost || 0).toFixed(2)}</td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#4a6e4a' }}>${((acc.qty || 0) * (acc.unitCost || 0)).toFixed(2)}</td>
+                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#6e767d' }}>{fmtCost(acc.unitCost)}</td>
+                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#4a6e4a' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>
                                                                             <td style={{ ...tdStyle, fontSize: '11px' }}>
-                                                                                <span style={{ color: '#6e767d' }}>{((acc.qty || 0) * (acc.laborHrsPerUnit || 0)).toFixed(2)}h</span>
+                                                                                <span style={{ color: '#6e767d' }}>{fmtHrs((acc.qty || 0) * (acc.laborHrsPerUnit || 0))}</span>
                                                                                 <button style={{ ...styles.iconButton, marginLeft: '4px', color: '#4a5568', padding: '2px' }} onClick={() => removeAccessory(location.id, i, accIdx)}>
                                                                                     <Icons.X />
                                                                                 </button>
@@ -3343,9 +3351,9 @@ function AllLocationsView({
                                                                 {item.description}
                                                                 {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
                                                             </td>
-                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>${(item.unitCost || 0).toFixed(2)}</td>
-                                                            <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>${itemTotal.cost.toFixed(2)}</td>
-                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>{itemTotal.labor.toFixed(2)}h</td>
+                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtCost(item.unitCost)}</td>
+                                                            <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
+                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
                                                         </tr>
                                                         
                                                         {/* Accessories */}
@@ -3363,10 +3371,10 @@ function AllLocationsView({
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>└ {acc.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.model}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.description}</td>
-                                                                <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>${(acc.unitCost || 0).toFixed(2)}</td>
-                                                                <td style={{ ...tdStyle, fontSize: '11px', color: '#6e9e6e' }}>${((acc.qty || 0) * (acc.unitCost || 0)).toFixed(2)}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{fmtCost(acc.unitCost)}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '11px', color: '#6e9e6e' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px' }}>
-                                                                    <span style={{ color: '#8b98a5' }}>{((acc.qty || 0) * (acc.laborHrsPerUnit || 0)).toFixed(2)}h</span>
+                                                                    <span style={{ color: '#8b98a5' }}>{fmtHrs((acc.qty || 0) * (acc.laborHrsPerUnit || 0))}</span>
                                                                     <button style={{ ...styles.iconButton, marginLeft: '4px', color: '#6e767d', padding: '2px' }} onClick={() => removeAccessory(location.id, i, accIdx)}>
                                                                         <Icons.X />
                                                                     </button>
@@ -3516,10 +3524,10 @@ function AllLocationsView({
 
 // Project status badge colors
 const PROJECT_STATUSES = {
-    bidding: { label: 'Bidding', color: '#f59e0b', bg: '#3d2e1a' },
-    won: { label: 'Won', color: '#00ba7c', bg: '#1a3d2e' },
-    'in-progress': { label: 'In Progress', color: '#1d9bf0', bg: '#1d3a5c' },
-    completed: { label: 'Completed', color: '#8b98a5', bg: '#2f3336' },
+    developing: { label: 'Developing', color: '#f59e0b', bg: '#3d2e1a' },
+    'proposal-submitted': { label: 'Proposal Submitted', color: '#a78bfa', bg: '#2d1a3d' },
+    active: { label: 'Active', color: '#1d9bf0', bg: '#1d3a5c' },
+    completed: { label: 'Completed', color: '#00ba7c', bg: '#1a3d2e' },
     lost: { label: 'Lost', color: '#f87171', bg: '#3d1a1a' },
     archived: { label: 'Archived', color: '#6e767d', bg: '#1a1f26' },
 };
@@ -3590,7 +3598,7 @@ function EditProjectModal({ project, onClose, onSave }) {
     const [projectNumber, setProjectNumber] = useState(project.projectNumber || '');
     const [dueDate, setDueDate] = useState(project.dueDate || '');
     const [notes, setNotes] = useState(project.notes || '');
-    const [status, setStatus] = useState(project.status || 'bidding');
+    const [status, setStatus] = useState(project.status || 'developing');
     
     const handleSubmit = () => {
         if (!name.trim()) return;
@@ -3658,9 +3666,76 @@ function EditProjectModal({ project, onClose, onSave }) {
                         <textarea value={notes} onChange={e => setNotes(e.target.value)} style={{ ...styles.textarea, minHeight: '80px' }} placeholder="Project notes..." />
                     </div>
                 </div>
+                {project.revisions?.length > 0 && (
+                    <div>
+                        <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', color: '#8b98a5' }}>Revision History</label>
+                        <div style={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
+                            {project.revisions.map(rev => (
+                                <div key={rev.id} style={{ padding: '8px 12px', borderBottom: '1px solid #2f3336', fontSize: '13px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: '600', color: rev.id === project.currentRevision ? '#f59e0b' : '#e7e9ea' }}>{rev.label}</span>
+                                        <span style={{ color: '#6e767d', fontSize: '11px' }}>{new Date(rev.createdAt).toLocaleDateString()}</span>
+                                    </div>
+                                    {rev.notes && <div style={{ color: '#8b98a5', fontSize: '12px', marginTop: '2px' }}>{rev.notes}</div>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px' }}>
                     <button style={styles.button('secondary')} onClick={onClose}>Cancel</button>
                     <button style={{ ...styles.button('primary'), opacity: !name.trim() ? 0.5 : 1 }} disabled={!name.trim()} onClick={handleSubmit}>Save Changes</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function RevisionPromptModal({ project, onClose, onCreateRevision }) {
+    const [label, setLabel] = useState('');
+    const [notes, setNotes] = useState('');
+
+    const suggestedLabel = useMemo(() => {
+        const revisions = project.revisions || [];
+        const revCount = revisions.filter(r => r.label.startsWith('Rev')).length;
+        if (revisions.length === 0) return 'Rev 1';
+        return 'Rev ' + (revCount + 1);
+    }, [project.revisions]);
+
+    useEffect(() => { setLabel(suggestedLabel); }, [suggestedLabel]);
+
+    const handleSubmit = () => {
+        if (!label.trim()) return;
+        onCreateRevision({ label: label.trim(), notes: notes.trim() });
+        onClose();
+    };
+
+    return (
+        <div style={styles.modal} onClick={onClose}>
+            <div style={{ ...styles.modalContent, width: '450px' }} onClick={e => e.stopPropagation()}>
+                <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <Icons.Edit /> New Revision Required
+                </h2>
+                <p style={{ color: '#8b98a5', fontSize: '14px', marginBottom: '16px' }}>
+                    This project has been submitted. Changes require a revision or change order label.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                        <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', color: '#8b98a5' }}>Revision Label *</label>
+                        <input
+                            type="text" value={label} onChange={e => setLabel(e.target.value)}
+                            style={styles.input} placeholder="e.g., Rev 1, CO-1"
+                            autoFocus onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+                        />
+                    </div>
+                    <div>
+                        <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', color: '#8b98a5' }}>Notes (optional)</label>
+                        <textarea value={notes} onChange={e => setNotes(e.target.value)} style={{ ...styles.input, minHeight: '60px', resize: 'vertical' }} placeholder="Reason for changes..." />
+                    </div>
+                </div>
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
+                    <button style={styles.button('secondary')} onClick={onClose}>Cancel</button>
+                    <button style={{ ...styles.button('primary'), opacity: !label.trim() ? 0.5 : 1 }} disabled={!label.trim()} onClick={handleSubmit}>Create Revision</button>
                 </div>
             </div>
         </div>
@@ -3676,9 +3751,10 @@ function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelet
         return projects.filter(p => {
             // Status filter
             if (filter === 'active' && (p.status === 'archived' || p.status === 'completed' || p.status === 'lost')) return false;
-            if (filter === 'archived' && p.status !== 'archived') return false;
-            if (filter === 'won' && p.status !== 'won' && p.status !== 'in-progress' && p.status !== 'completed') return false;
+            if (filter === 'submitted' && p.status !== 'proposal-submitted') return false;
+            if (filter === 'completed' && p.status !== 'completed') return false;
             if (filter === 'lost' && p.status !== 'lost') return false;
+            if (filter === 'archived' && p.status !== 'archived') return false;
             
             // Search
             if (searchTerm) {
@@ -3699,11 +3775,12 @@ function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelet
     }, [contextMenu]);
     
     const statusCounts = useMemo(() => {
-        const counts = { all: projects.length, active: 0, won: 0, lost: 0, archived: 0 };
+        const counts = { all: projects.length, active: 0, submitted: 0, completed: 0, lost: 0, archived: 0 };
         projects.forEach(p => {
             if (p.status === 'archived') counts.archived++;
             else if (p.status === 'lost') counts.lost++;
-            else if (p.status === 'won' || p.status === 'in-progress' || p.status === 'completed') counts.won++;
+            else if (p.status === 'completed') counts.completed++;
+            if (p.status === 'proposal-submitted') counts.submitted++;
             if (p.status !== 'archived' && p.status !== 'completed' && p.status !== 'lost') counts.active++;
         });
         return counts;
@@ -3736,7 +3813,8 @@ function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelet
                     <div style={{ display: 'flex', gap: '4px', backgroundColor: '#1a1f26', borderRadius: '8px', padding: '4px' }}>
                         {[
                             { key: 'active', label: 'Active' },
-                            { key: 'won', label: 'Won' },
+                            { key: 'submitted', label: 'Submitted' },
+                            { key: 'completed', label: 'Completed' },
                             { key: 'lost', label: 'Lost' },
                             { key: 'archived', label: 'Archived' },
                             { key: 'all', label: 'All' },
@@ -3803,11 +3881,11 @@ function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelet
                                     <div style={{ display: 'flex', gap: '16px', marginBottom: '12px' }}>
                                         <div>
                                             <div style={{ fontSize: '11px', color: '#6e767d', marginBottom: '2px' }}>MATERIAL</div>
-                                            <div style={{ fontSize: '16px', fontWeight: '600', color: '#00ba7c' }}>{formatCurrency(totals.cost)}</div>
+                                            <div style={{ fontSize: '16px', fontWeight: '600', color: '#00ba7c' }}>{fmtCost(totals.cost)}</div>
                                         </div>
                                         <div>
                                             <div style={{ fontSize: '11px', color: '#6e767d', marginBottom: '2px' }}>LABOR</div>
-                                            <div style={{ fontSize: '16px', fontWeight: '600', color: '#1d9bf0' }}>{totals.labor.toFixed(1)}h</div>
+                                            <div style={{ fontSize: '16px', fontWeight: '600', color: '#1d9bf0' }}>{fmtHrs(totals.labor)}</div>
                                         </div>
                                         <div>
                                             <div style={{ fontSize: '11px', color: '#6e767d', marginBottom: '2px' }}>ITEMS</div>
@@ -3924,8 +4002,11 @@ function App() {
     const [activeProjectId, setActiveProjectId] = useState(null);
     const [showProjectsHome, setShowProjectsHome] = useState(true);
     const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+    const hasLoaded = React.useRef(false);
     const [editingProject, setEditingProject] = useState(null); // Project being edited
     const [showProjectSettings, setShowProjectSettings] = useState(false);
+    const [showRevisionPrompt, setShowRevisionPrompt] = useState(false);
+    const [pendingMutation, setPendingMutation] = useState(null);
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
     const [projectFilter, setProjectFilter] = useState('active'); // 'all', 'active', 'archived', 'won', 'lost'
     
@@ -4063,7 +4144,13 @@ function App() {
     const project = projects.find(p => p.id === activeProjectId) || defaultProject;
     
     // Update project helper
-    const setProject = (updater) => {
+    // Check if a mutation requires a revision before proceeding
+    const requiresRevision = (proj) => {
+        const postSubmissionStatuses = ['proposal-submitted', 'active', 'completed'];
+        return postSubmissionStatuses.includes(proj?.status) && !proj?.currentRevision;
+    };
+
+    const setProjectDirect = (updater) => {
         setProjects(prev => prev.map(p => {
             if (p.id === activeProjectId) {
                 const newProject = typeof updater === 'function' ? updater(p) : updater;
@@ -4072,6 +4159,44 @@ function App() {
             return p;
         }));
     };
+
+    const setProject = (updater) => {
+        const currentProject = projects.find(p => p.id === activeProjectId);
+        if (currentProject && requiresRevision(currentProject)) {
+            setPendingMutation(() => () => setProjectDirect(updater));
+            setShowRevisionPrompt(true);
+            return;
+        }
+        setProjectDirect(updater);
+    };
+
+    // Handle revision creation from the modal
+    const createRevision = ({ label, notes }) => {
+        const revision = {
+            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+            label,
+            notes,
+            createdAt: new Date().toISOString(),
+        };
+        // First, add the revision to the project and set it as current
+        setProjectDirect(p => ({
+            ...p,
+            revisions: [...(p.revisions || []), revision],
+            currentRevision: revision.id,
+        }));
+        // Then execute the pending mutation
+        if (pendingMutation) {
+            setTimeout(() => {
+                pendingMutation();
+                setPendingMutation(null);
+            }, 50);
+        }
+    };
+
+    // Close current revision (next change will prompt for new one)
+    const closeRevision = () => {
+        setProjectDirect(p => ({ ...p, currentRevision: null }));
+    };
     
     // Create new project
     const createProject = (projectData) => {
@@ -4079,13 +4204,15 @@ function App() {
             id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
             name: projectData.name || 'Untitled Project',
             client: projectData.client || '',
-            status: 'bidding', // bidding, won, in-progress, completed, lost, archived
+            status: 'developing',
             locations: [],
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             dueDate: projectData.dueDate || null,
             notes: projectData.notes || '',
             projectNumber: projectData.projectNumber || '',
+            revisions: [],
+            currentRevision: null,
         };
         setProjects(prev => [newProject, ...prev]);
         return newProject.id;
@@ -4117,7 +4244,7 @@ function App() {
             name: source.name + ' (Copy)',
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-            status: 'bidding',
+            status: 'developing',
         };
         setProjects(prev => [newProject, ...prev]);
         showToast('Project duplicated');
@@ -4173,8 +4300,9 @@ function App() {
         return { cost, labor, items };
     };
 
-    // Auto-save to localStorage
+    // Auto-save to localStorage (skip until initial load completes)
     useEffect(() => {
+        if (!hasLoaded.current) return;
         const data = { projects, packages, templates, activeProjectId };
         localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
     }, [projects, packages, templates, activeProjectId]);
@@ -4191,7 +4319,16 @@ function App() {
             try {
                 const data = JSON.parse(saved);
                 if (data.projects?.length > 0) {
-                    setProjects(data.projects);
+                    // Migrate old statuses to new ones
+                    const statusMap = { bidding: 'developing', won: 'active', 'in-progress': 'active' };
+                    const migratedProjects = data.projects.map(p =>
+                        statusMap[p.status] ? { ...p, status: statusMap[p.status] } : p
+                    );
+                    setProjects(migratedProjects);
+                }
+                if (data.activeProjectId) {
+                    setActiveProjectId(data.activeProjectId);
+                    setShowProjectsHome(false);
                 }
                 if (data.packages?.length > 0) setPackages(data.packages);
                 if (data.templates) setTemplates(data.templates);
@@ -4206,7 +4343,7 @@ function App() {
                         const migratedProject = {
                             ...oldData.project,
                             id: Date.now().toString(),
-                            status: 'bidding',
+                            status: 'developing',
                             client: '',
                             createdAt: new Date().toISOString(),
                             updatedAt: new Date().toISOString(),
@@ -4218,6 +4355,7 @@ function App() {
                 } catch (e) { console.error('Failed to migrate old data'); }
             }
         }
+        hasLoaded.current = true;
     }, []);
     
     // Save to history for undo
@@ -4284,6 +4422,118 @@ function App() {
         });
 
         showToast(`Exporting ${locationsWithItems.length} Esticom file${locationsWithItems.length > 1 ? 's' : ''}...`);
+    };
+
+    const exportConsolidatedBOM = () => {
+        const XLSX = window.XLSX;
+        if (!XLSX) { showToast('Export library not loaded. Check your internet connection.'); return; }
+        const locationsWithItems = getLocationsWithItems(project.locations);
+        if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
+        const partMap = {};
+        for (const location of locationsWithItems) {
+            for (const item of (location.items || [])) {
+                const key = item.partNumber || (item.manufacturer + '|' + item.model);
+                if (partMap[key]) { partMap[key].qty += (item.qty || 0); }
+                else { partMap[key] = { qty: item.qty || 0, name: item.description || ((item.manufacturer || '') + ' ' + (item.model || '')).trim(), manufacturer: item.manufacturer || '', supplier: item.vendor || '', partNumber: item.partNumber || '', uom: item.uom || 'EA', unitCost: item.unitCost || 0 }; }
+                if (item.accessories) {
+                    for (const acc of item.accessories) {
+                        const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                        if (partMap[accKey]) { partMap[accKey].qty += (acc.qty || 0); }
+                        else { partMap[accKey] = { qty: acc.qty || 0, name: acc.description || ((acc.manufacturer || '') + ' ' + (acc.model || '')).trim(), manufacturer: acc.manufacturer || '', supplier: acc.vendor || '', partNumber: acc.partNumber || '', uom: acc.uom || 'EA', unitCost: acc.unitCost || 0 }; }
+                    }
+                }
+            }
+        }
+        const wb = XLSX.utils.book_new();
+        const data = [[], ['BILL OF MATERIALS (Import Template)', '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
+        for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
+        ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
+        XLSX.utils.book_append_sheet(wb, ws, 'Bill of materials');
+        const projectName = (project.name || 'Project').replace(/[<>:"/\\|?*]/g, '-').trim();
+        XLSX.writeFile(wb, projectName + ' - Consolidated BOM.xlsx');
+        showToast('Consolidated BOM exported');
+    };
+
+    // Build consolidated BOM data for the in-app view
+    const getConsolidatedBOM = () => {
+        const locationsWithItems = getLocationsWithItems(project.locations);
+        const partMap = {};
+        for (const location of locationsWithItems) {
+            for (const item of (location.items || [])) {
+                const key = item.partNumber || (item.manufacturer + '|' + item.model);
+                if (partMap[key]) {
+                    partMap[key].totalQty += (item.qty || 0);
+                    partMap[key].locations.push(location.path || location.name);
+                } else {
+                    partMap[key] = {
+                        key,
+                        totalQty: item.qty || 0,
+                        manufacturer: item.manufacturer || '',
+                        model: item.model || '',
+                        partNumber: item.partNumber || '',
+                        description: item.description || '',
+                        category: item.category || '',
+                        unitCost: item.unitCost || 0,
+                        laborHrsPerUnit: item.laborHrsPerUnit || 0,
+                        uom: item.uom || 'EA',
+                        vendor: item.vendor || '',
+                        locations: [location.path || location.name],
+                    };
+                }
+                if (item.accessories) {
+                    for (const acc of item.accessories) {
+                        const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                        if (partMap[accKey]) {
+                            partMap[accKey].totalQty += (acc.qty || 0);
+                            if (!partMap[accKey].locations.includes(location.path || location.name)) partMap[accKey].locations.push(location.path || location.name);
+                        } else {
+                            partMap[accKey] = {
+                                key: accKey,
+                                totalQty: acc.qty || 0,
+                                manufacturer: acc.manufacturer || '',
+                                model: acc.model || '',
+                                partNumber: acc.partNumber || '',
+                                description: acc.description || '',
+                                category: acc.category || '',
+                                unitCost: acc.unitCost || 0,
+                                laborHrsPerUnit: acc.laborHrsPerUnit || 0,
+                                uom: acc.uom || 'EA',
+                                vendor: acc.vendor || '',
+                                locations: [location.path || location.name],
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        return Object.values(partMap).sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.manufacturer || '').localeCompare(b.manufacturer || ''));
+    };
+
+    // Update unit cost or labor across all matching items in all locations
+    const updateConsolidatedField = (partKey, field, value) => {
+        const numVal = parseFloat(value);
+        if (isNaN(numVal) || numVal < 0) return;
+        const updateLocs = (locs) => locs.map(loc => {
+            let items = loc.items;
+            if (items) {
+                items = items.map(item => {
+                    const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
+                    let updatedItem = itemKey === partKey ? { ...item, [field]: numVal } : item;
+                    if (updatedItem.accessories) {
+                        updatedItem = { ...updatedItem, accessories: updatedItem.accessories.map(acc => {
+                            const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                            return accKey === partKey ? { ...acc, [field]: numVal } : acc;
+                        })};
+                    }
+                    return updatedItem;
+                });
+            }
+            const children = loc.children ? updateLocs(loc.children) : loc.children;
+            return { ...loc, items, children };
+        });
+        setProject(p => ({ ...p, locations: updateLocs(p.locations) }));
     };
 
     // Global keyboard shortcuts
@@ -4873,6 +5123,15 @@ function App() {
                             {PROJECT_STATUSES[project.status]?.label}
                         </span>
                     )}
+                    {project.currentRevision && project.revisions && (
+                        <span
+                            style={{ ...styles.badge(''), backgroundColor: '#3d2e1a', color: '#f59e0b', cursor: 'pointer' }}
+                            title="Click to close this revision. Next change will require a new revision."
+                            onClick={() => { if (confirm('Close revision "' + ((project.revisions.find(r => r.id === project.currentRevision) || {}).label || '') + '"? Next change will require a new revision.')) closeRevision(); }}
+                        >
+                            {(project.revisions.find(r => r.id === project.currentRevision) || {}).label || 'Revision'}
+                        </span>
+                    )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                     <div style={{ display: 'flex', gap: '4px' }}>
@@ -4923,7 +5182,7 @@ function App() {
                                 </div>
                                 {projectTotals.itemCount > 0 && (
                                     <div style={{ display: 'flex', gap: '12px', fontSize: '13px' }}>
-                                        <span style={{ color: '#00ba7c' }}><Icons.DollarSign /> {formatCurrency(projectTotals.cost)}</span>
+                                        <span style={{ color: '#00ba7c' }}><Icons.DollarSign /> {fmtCost(projectTotals.cost)}</span>
                                         <span style={{ color: '#1d9bf0' }}><Icons.Clock /> {formatHours(projectTotals.labor)}</span>
                                     </div>
                                 )}
@@ -5141,18 +5400,18 @@ function App() {
                 {tab === 'reports' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
                         <h2 style={{ margin: '0 0 24px 0', fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Download /> Reports & Exports</h2>
-                        <div style={{ display: 'grid', gap: '16px', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
-                            {/* Export to Esticom - Active */}
+                        <div style={{ display: 'grid', gap: '16px', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', marginBottom: '24px' }}>
+                            {/* Export to Esticom */}
                             <div style={styles.card}>
                                 <div style={styles.cardTitle}>Export to Esticom</div>
                                 <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Export each location as an Esticom-compatible .xlsx BOM file.</p>
                                 <button style={styles.button('primary')} onClick={exportToEsticom}><Icons.Download /> Export</button>
                             </div>
-                            {/* Consolidated BOM - Coming Soon */}
-                            <div style={{ ...styles.card, opacity: 0.5 }}>
+                            {/* Consolidated BOM Export */}
+                            <div style={styles.card}>
                                 <div style={styles.cardTitle}>Consolidated BOM</div>
                                 <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Single BOM with all components across locations.</p>
-                                <button style={{ ...styles.button('primary'), cursor: 'not-allowed' }} disabled><Icons.Download /> Coming Soon</button>
+                                <button style={styles.button('primary')} onClick={exportConsolidatedBOM}><Icons.Download /> Export</button>
                             </div>
                             {/* Project Summary - Coming Soon */}
                             <div style={{ ...styles.card, opacity: 0.5 }}>
@@ -5161,6 +5420,74 @@ function App() {
                                 <button style={{ ...styles.button('primary'), cursor: 'not-allowed' }} disabled><Icons.Download /> Coming Soon</button>
                             </div>
                         </div>
+
+                        {/* Editable Consolidated BOM Table */}
+                        {(() => {
+                            const bomItems = getConsolidatedBOM();
+                            if (bomItems.length === 0) return <p style={{ color: '#8b98a5' }}>No components in project. Add items to locations to see the consolidated BOM.</p>;
+                            let totalCost = 0, totalLabor = 0;
+                            bomItems.forEach(b => { totalCost += b.totalQty * b.unitCost; totalLabor += b.totalQty * b.laborHrsPerUnit; });
+                            let currentCategory = '';
+                            return (
+                                <div>
+                                    <h3 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        Consolidated BOM
+                                        <span style={{ fontSize: '13px', color: '#8b98a5', fontWeight: '400' }}>({fmtQty(bomItems.length)} unique items — {fmtCost(totalCost)} — {fmtHrs(totalLabor)})</span>
+                                    </h3>
+                                    <p style={{ color: '#8b98a5', fontSize: '13px', margin: '0 0 12px 0' }}>Edit Unit Cost or Unit Labor below to update all matching items across all locations.</p>
+                                    <div style={{ overflowX: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                            <thead>
+                                                <tr style={{ background: '#161b22' }}>
+                                                    <th style={{ ...styles.th, width: '50px' }}>Qty</th>
+                                                    <th style={styles.th}>Manufacturer</th>
+                                                    <th style={styles.th}>Model</th>
+                                                    <th style={styles.th}>Part Number</th>
+                                                    <th style={{ ...styles.th, minWidth: '200px' }}>Description</th>
+                                                    <th style={{ ...styles.th, width: '90px' }}>Unit Cost</th>
+                                                    <th style={{ ...styles.th, width: '90px' }}>Unit Labor</th>
+                                                    <th style={{ ...styles.th, width: '90px' }}>Ext. Cost</th>
+                                                    <th style={{ ...styles.th, width: '90px' }}>Ext. Labor</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {bomItems.map((b, idx) => {
+                                                    const showCategory = b.category !== currentCategory;
+                                                    if (showCategory) currentCategory = b.category;
+                                                    return (
+                                                        <React.Fragment key={b.key}>
+                                                            {showCategory && (
+                                                                <tr><td colSpan={9} style={{ padding: '8px 12px', background: '#1a1f26', fontWeight: '700', fontSize: '12px', color: '#8b98a5', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '1px solid #2f3336' }}>{b.category || 'Uncategorized'}</td></tr>
+                                                            )}
+                                                            <tr style={{ borderBottom: '1px solid #2f3336' }} title={b.locations.join(', ')}>
+                                                                <td style={styles.td}>{fmtQty(b.totalQty)}</td>
+                                                                <td style={styles.td}>{b.manufacturer}</td>
+                                                                <td style={{ ...styles.td, fontWeight: '600' }}>{b.model}</td>
+                                                                <td style={{ ...styles.td, fontSize: '12px', color: '#8b98a5' }}>{b.partNumber}</td>
+                                                                <td style={styles.td}>{b.description}</td>
+                                                                <td style={styles.td}>
+                                                                    <input type="number" step="0.01" min="0" value={b.unitCost} onChange={e => updateConsolidatedField(b.key, 'unitCost', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} />
+                                                                </td>
+                                                                <td style={styles.td}>
+                                                                    <input type="number" step="0.01" min="0" value={b.laborHrsPerUnit} onChange={e => updateConsolidatedField(b.key, 'laborHrsPerUnit', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} />
+                                                                </td>
+                                                                <td style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(b.totalQty * b.unitCost)}</td>
+                                                                <td style={styles.td}>{fmtHrs(b.totalQty * b.laborHrsPerUnit)}</td>
+                                                            </tr>
+                                                        </React.Fragment>
+                                                    );
+                                                })}
+                                                <tr style={{ background: '#161b22', fontWeight: '700' }}>
+                                                    <td colSpan={7} style={{ ...styles.td, textAlign: 'right' }}>TOTALS</td>
+                                                    <td style={{ ...styles.td, color: '#00ba7c' }}>{fmtCost(totalCost)}</td>
+                                                    <td style={styles.td}>{fmtHrs(totalLabor)}</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            );
+                        })()}
                     </section>
                 )}
             </main>
@@ -5171,6 +5498,15 @@ function App() {
             {showDuplicate && (duplicateTarget || selected) && <DuplicateModal location={duplicateTarget || selected} onClose={() => { setShowDuplicate(false); setDuplicateTarget(null); }} onDuplicate={duplicateStructure} />}
             {showDelete && deleteTargets.length > 0 && <DeleteConfirmModal locations={deleteTargets} onClose={() => { setShowDelete(false); setDeleteTargets([]); setMultiSelectLocations([]); }} onDelete={deleteLocation} />}
             
+            {/* Revision Prompt Modal */}
+            {showRevisionPrompt && (
+                <RevisionPromptModal
+                    project={project}
+                    onClose={() => { setShowRevisionPrompt(false); setPendingMutation(null); }}
+                    onCreateRevision={createRevision}
+                />
+            )}
+
             {/* Save Package Modal */}
             {showSavePackage && pendingPackageItems.length > 0 && (
                 <div style={styles.modal} onClick={() => setShowSavePackage(false)}>
@@ -5183,7 +5519,7 @@ function App() {
                                 {pendingPackageItems.map((item, i) => (
                                     <div key={i} style={{ ...styles.previewItem, justifyContent: 'space-between' }}>
                                         <span>{item.qty}x {item.manufacturer} {item.model}</span>
-                                        <span style={{ color: '#00ba7c' }}>${(item.qty * (item.unitCost || 0)).toFixed(2)}</span>
+                                        <span style={{ color: '#00ba7c' }}>{fmtCost(item.qty * (item.unitCost || 0))}</span>
                                     </div>
                                 ))}
                             </div>
@@ -5208,7 +5544,7 @@ function App() {
                                 {(selected.items || []).map((item, i) => (
                                     <div key={i} style={{ ...styles.previewItem, justifyContent: 'space-between' }}>
                                         <span>{item.qty}x {item.manufacturer} {item.model}</span>
-                                        <span style={{ color: '#00ba7c' }}>${(item.qty * (item.unitCost || 0)).toFixed(2)}</span>
+                                        <span style={{ color: '#00ba7c' }}>{fmtCost(item.qty * (item.unitCost || 0))}</span>
                                     </div>
                                 ))}
                             </div>
@@ -5241,7 +5577,7 @@ function App() {
                                                     <span style={{ fontWeight: '600' }}>{tpl.name}</span>
                                                     <span style={styles.badge('purple')}>{tpl.items.length} items</span>
                                                 </div>
-                                                <span style={{ color: '#00ba7c', fontWeight: '600' }}>${cost.toFixed(2)}</span>
+                                                <span style={{ color: '#00ba7c', fontWeight: '600' }}>{fmtCost(cost)}</span>
                                             </div>
                                         </div>
                                     );
