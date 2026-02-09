@@ -1,4 +1,4 @@
-const CACHE_NAME = 'av-estimator-v7';
+const CACHE_NAME = 'av-estimator-v8';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

@@ -1779,7 +1779,7 @@ function AddAccessoryModal({ item, catalog, onConfirm, onClose }) {
 const DEFAULT_COLUMNS = [
     { id: 'checkbox', label: '', width: 40, fixed: true },
     { id: 'expand', label: '', width: 30, fixed: true },
-    { id: 'qty', label: 'Qty', width: 60 },
+    { id: 'qty', label: 'Qty', width: 75 },
     { id: 'notes', label: 'Notes', width: 120 },
     { id: 'manufacturer', label: 'Manufacturer', width: 120 },
     { id: 'model', label: 'Model', width: 140 },
@@ -1903,7 +1903,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
         const inputStyle = { ...styles.inputSmall, ...compactStyles.input };
         switch (col.id) {
             case 'checkbox':
-                return <td key={col.id} style={{ ...tdStyle, paddingLeft: isPackageItem ? '24px' : undefined }}><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(itemIdx)} /></td>;
+                return <td key={col.id} style={{ ...tdStyle, paddingLeft: isPackageItem ? '24px' : undefined }}><input type="checkbox" checked={isSelected} onChange={e => toggleSelect(itemIdx, e)} /></td>;
             case 'expand':
                 return <td key={col.id} style={{ ...tdStyle, padding: compactMode ? '2px 4px' : '8px 4px' }}>{hasAccessories && (
                     <button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => toggleItemExpand(itemIdx)}>
@@ -1911,7 +1911,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                     </button>
                 )}</td>;
             case 'qty':
-                return <td key={col.id} style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(itemIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '45px' : '50px' }} min="0" /></td>;
+                return <td key={col.id} style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(itemIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} min="0" /></td>;
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(itemIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             case 'manufacturer':
@@ -1943,7 +1943,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
             case 'expand':
                 return <td key={col.id} style={tdStyle}></td>;
             case 'qty':
-                return <td key={col.id} style={{ ...tdStyle, paddingLeft: pkgColor ? '40px' : '24px' }}><input type="number" value={acc.qty} onChange={e => changeAccessoryQty(itemIdx, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '45px' : '50px' }} min="0" /></td>;
+                return <td key={col.id} style={{ ...tdStyle, paddingLeft: pkgColor ? '40px' : '24px' }}><input type="number" value={acc.qty} onChange={e => changeAccessoryQty(itemIdx, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} min="0" /></td>;
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(itemIdx, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
             case 'manufacturer':
@@ -2172,7 +2172,27 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
     };
     
     const mainItemCount = (location.items || []).length; // Just main items, not accessories
-    const toggleSelect = (idx) => { setSelectedItems(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]); };
+    const lastClickedIdx = useRef(null);
+    const toggleSelect = (idx, e) => {
+        if (e && e.shiftKey && lastClickedIdx.current !== null) {
+            // Shift+Click: select range between last clicked and current
+            const start = Math.min(lastClickedIdx.current, idx);
+            const end = Math.max(lastClickedIdx.current, idx);
+            const range = [];
+            for (let i = start; i <= end; i++) range.push(i);
+            setSelectedItems(prev => {
+                const combined = new Set([...prev, ...range]);
+                return [...combined];
+            });
+        } else if (e && (e.ctrlKey || e.metaKey)) {
+            // Ctrl+Click: toggle individual
+            setSelectedItems(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]);
+        } else {
+            // Normal click on checkbox: toggle individual
+            setSelectedItems(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]);
+        }
+        lastClickedIdx.current = idx;
+    };
     const selectAll = () => { setSelectedItems(selectedItems.length === mainItemCount ? [] : location.items.map((_, i) => i)); };
     const handleCopy = () => { onCopy(selectedItems.map(idx => ({ ...location.items[idx] }))); };
     const handlePaste = () => { onPaste(location.id); setSelectedItems([]); };
@@ -2360,7 +2380,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                     const pkgColor = styles.pkgColor(pkg.name);
                                     const isPkgExpanded = expandedPackages[pkg.name] !== false;
                                     const isSelected = selectedItems.includes(pkg.idx);
-                                    const togglePkgSelect = () => toggleSelect(pkg.idx);
+                                    const togglePkgSelect = (e) => toggleSelect(pkg.idx, e);
 
                                     // Handler to change package instance qty
                                     const changePkgQty = (val) => {
@@ -2377,9 +2397,9 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                                 onContextMenu={e => handleContextMenu(e, pkg.idx, false, null, true, pkg.name)}>
                                                 {columns.map((col, colIndex) => {
                                                     const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px' };
-                                                    if (col.id === 'checkbox') return <td key={col.id} style={tdS}><input type="checkbox" checked={isSelected} onChange={() => togglePkgSelect()} /></td>;
+                                                    if (col.id === 'checkbox') return <td key={col.id} style={tdS}><input type="checkbox" checked={isSelected} onChange={e => togglePkgSelect(e)} /></td>;
                                                     if (col.id === 'expand') return <td key={col.id} style={tdS}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>;
-                                                    if (col.id === 'qty') return <td key={col.id} style={tdS}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, ...compactStyles.input, width: '50px', fontWeight: '700' }} min="1" /></td>;
+                                                    if (col.id === 'qty') return <td key={col.id} style={tdS}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, ...compactStyles.input, width: '60px', fontWeight: '700' }} min="1" /></td>;
                                                     if (col.id === 'manufacturer' || col.id === 'notes') return <td key={col.id} style={{ ...tdS, fontWeight: '700' }} colSpan={col.id === 'notes' ? 1 : undefined}>
                                                         {col.id === 'notes' ? '' : <><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isOutOfDate && <span style={{ color: '#f59e0b', fontSize: '11px' }} title="Package definition has been updated">⚠ outdated</span>} {pkg.isMissing && <span style={{ color: '#f87171', fontSize: '11px' }}>⚠ missing</span>}</>}
                                                     </td>;
@@ -3148,6 +3168,18 @@ function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackage
     const [editNameValue, setEditNameValue] = useState('');
     const [syncPrompt, setSyncPrompt] = useState(null); // { pkgId, pkgName, newVersion, instanceCount }
 
+    // Resizable columns for package detail table
+    const PKG_COLUMNS = [
+        { id: 'qtyPerPkg', label: 'Qty/Pkg', width: 80 },
+        { id: 'manufacturer', label: 'Manufacturer', width: 150 },
+        { id: 'model', label: 'Model', width: 180 },
+        { id: 'unitCost', label: 'Unit Cost', width: 100 },
+        { id: 'labor', label: 'Labor', width: 80 },
+        { id: 'ext', label: 'Ext.', width: 90 },
+        { id: 'remove', label: '', width: 40, fixed: true },
+    ];
+    const { columns: pkgCols, startResize: startPkgResize } = useFlexibleColumns(PKG_COLUMNS);
+
     const allPackages = [...(catalogPackages || []), ...(projectPackages || [])];
     const selectedPkg = allPackages.find(p => p.id === selectedPkgId);
     const selectedScope = selectedPkg ? (selectedPkg.scope === 'project' ? 'project' : 'catalog') : null;
@@ -3215,6 +3247,29 @@ function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackage
             ...prev,
             packages: (prev.packages || []).filter(p => p.id !== pkgId),
         }));
+    };
+
+    const duplicatePackage = (pkgId) => {
+        const pkg = allPackages.find(p => p.id === pkgId);
+        if (!pkg) return;
+        const newPkg = {
+            ...pkg,
+            id: generatePackageId(),
+            name: pkg.name + ' (Copy)',
+            version: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            items: (pkg.items || []).map(item => ({ ...item })),
+        };
+        const scope = pkg.scope === 'project' ? 'project' : 'catalog';
+        if (scope === 'catalog') {
+            onUpdateCatalogPackages(prev => [...prev, newPkg]);
+        } else {
+            onUpdateProjectPackages(prev => ({ ...prev, packages: [...(prev.packages || []), newPkg] }));
+        }
+        setSelectedPkgId(newPkg.id);
+        setEditingName(newPkg.id);
+        setEditNameValue(newPkg.name);
     };
 
     const triggerSyncPrompt = (pkgId) => {
@@ -3398,6 +3453,7 @@ function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackage
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px' }}>
                                     <button style={styles.button('secondary')} onClick={() => startRenamePkg(selectedPkg)} title="Rename"><Icons.Edit /></button>
+                                    <button style={styles.button('secondary')} onClick={() => duplicatePackage(selectedPkg.id)} title="Duplicate package"><Icons.Copy /></button>
                                     {selectedScope === 'project' && (
                                         <button style={{ ...styles.button('secondary'), fontSize: '11px' }} onClick={() => promoteToCatalog(selectedPkg.id)} title="Promote to catalog package">
                                             Promote to Catalog
@@ -3416,44 +3472,47 @@ function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackage
 
                             {/* Components table */}
                             {(selectedPkg.items || []).length > 0 && (
-                                <table style={{ ...styles.table, marginBottom: '16px' }}>
-                                    <thead>
-                                        <tr>
-                                            <th style={{ ...styles.th, width: '60px' }}>Qty/Pkg</th>
-                                            <th style={styles.th}>Manufacturer</th>
-                                            <th style={styles.th}>Model</th>
-                                            <th style={{ ...styles.th, width: '100px' }}>Unit Cost</th>
-                                            <th style={{ ...styles.th, width: '80px' }}>Labor</th>
-                                            <th style={{ ...styles.th, width: '80px' }}>Ext.</th>
-                                            <th style={{ ...styles.th, width: '40px' }}></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {selectedPkg.items.map((item, i) => {
-                                            const qpp = item.qtyPerPackage || item.qty || 1;
-                                            const ext = qpp * (item.unitCost || 0);
-                                            return (
-                                                <tr key={i}>
-                                                    <td style={styles.td}>
-                                                        <input type="number" min="1" value={qpp} onChange={e => updateComponentField(selectedPkg.id, i, 'qtyPerPackage', Math.max(1, parseInt(e.target.value) || 1))} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '50px' }} />
-                                                    </td>
-                                                    <td style={styles.td}>{item.manufacturer}</td>
-                                                    <td style={{ ...styles.td, fontWeight: '600' }}>{item.model}</td>
-                                                    <td style={styles.td}>
-                                                        <input type="number" min="0" step="0.01" value={item.unitCost || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'unitCost', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '80px' }} />
-                                                    </td>
-                                                    <td style={styles.td}>
-                                                        <input type="number" min="0" step="0.1" value={item.laborHrsPerUnit || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'laborHrsPerUnit', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '60px' }} />
-                                                    </td>
-                                                    <td style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(ext)}</td>
-                                                    <td style={styles.td}>
-                                                        <button style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }} onClick={() => removeComponent(selectedPkg.id, i)} title="Remove component">×</button>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
+                                <div style={{ overflowX: 'auto', marginBottom: '16px' }}>
+                                    <table style={{ ...styles.table, tableLayout: 'fixed', width: pkgCols.reduce((s, c) => s + c.width, 0) + 'px' }}>
+                                        <thead>
+                                            <tr>
+                                                {pkgCols.map((col, colIndex) => (
+                                                    <th key={col.id} style={{ ...styles.th, width: col.width + 'px', position: 'relative' }}>
+                                                        {col.label}
+                                                        {!col.fixed && (
+                                                            <div
+                                                                style={styles.resizeHandle}
+                                                                onMouseDown={e => startPkgResize(colIndex, e)}
+                                                                onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
+                                                                onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
+                                                            />
+                                                        )}
+                                                    </th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {selectedPkg.items.map((item, i) => {
+                                                const qpp = item.qtyPerPackage || item.qty || 1;
+                                                const ext = qpp * (item.unitCost || 0);
+                                                return (
+                                                    <tr key={i}>
+                                                        {pkgCols.map(col => {
+                                                            if (col.id === 'qtyPerPkg') return <td key={col.id} style={styles.td}><input type="number" min="1" value={qpp} onChange={e => updateComponentField(selectedPkg.id, i, 'qtyPerPackage', Math.max(1, parseInt(e.target.value) || 1))} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '100%', boxSizing: 'border-box' }} /></td>;
+                                                            if (col.id === 'manufacturer') return <td key={col.id} style={styles.td}>{item.manufacturer}</td>;
+                                                            if (col.id === 'model') return <td key={col.id} style={{ ...styles.td, fontWeight: '600' }}>{item.model}</td>;
+                                                            if (col.id === 'unitCost') return <td key={col.id} style={styles.td}><input type="number" min="0" step="0.01" value={item.unitCost || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'unitCost', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '100%', boxSizing: 'border-box' }} /></td>;
+                                                            if (col.id === 'labor') return <td key={col.id} style={styles.td}><input type="number" min="0" step="0.1" value={item.laborHrsPerUnit || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'laborHrsPerUnit', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '100%', boxSizing: 'border-box' }} /></td>;
+                                                            if (col.id === 'ext') return <td key={col.id} style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(ext)}</td>;
+                                                            if (col.id === 'remove') return <td key={col.id} style={styles.td}><button style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }} onClick={() => removeComponent(selectedPkg.id, i)} title="Remove component">×</button></td>;
+                                                            return null;
+                                                        })}
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
                             )}
 
                             {/* Add Component */}
@@ -3564,7 +3623,7 @@ function AllLocationsView({
     const ALL_LOC_COLUMNS = [
         { id: 'checkbox', label: '', width: 40, fixed: true },
         { id: 'expand', label: '', width: 30, fixed: true },
-        { id: 'qty', label: 'Qty', width: 60 },
+        { id: 'qty', label: 'Qty', width: 75 },
         { id: 'notes', label: 'Notes', width: 120 },
         { id: 'manufacturer', label: 'Manufacturer', width: 120 },
         { id: 'model', label: 'Model', width: 140 },
@@ -3731,14 +3790,29 @@ function AllLocationsView({
     };
     
     // Selection handlers
-    const toggleSelect = (locationId, idx) => {
-        setSelectedItems(prev => {
-            const current = prev[locationId] || [];
-            return {
-                ...prev,
-                [locationId]: current.includes(idx) ? current.filter(i => i !== idx) : [...current, idx]
-            };
-        });
+    const lastClickedRef = useRef({ locationId: null, idx: null });
+    const toggleSelect = (locationId, idx, e) => {
+        if (e && e.shiftKey && lastClickedRef.current.locationId === locationId && lastClickedRef.current.idx !== null) {
+            // Shift+Click: select range within same location
+            const start = Math.min(lastClickedRef.current.idx, idx);
+            const end = Math.max(lastClickedRef.current.idx, idx);
+            const range = [];
+            for (let i = start; i <= end; i++) range.push(i);
+            setSelectedItems(prev => {
+                const current = prev[locationId] || [];
+                const combined = new Set([...current, ...range]);
+                return { ...prev, [locationId]: [...combined] };
+            });
+        } else {
+            setSelectedItems(prev => {
+                const current = prev[locationId] || [];
+                return {
+                    ...prev,
+                    [locationId]: current.includes(idx) ? current.filter(i => i !== idx) : [...current, idx]
+                };
+            });
+        }
+        lastClickedRef.current = { locationId, idx };
     };
     
     const selectAllInLocation = (locationId, itemCount) => {
@@ -3952,9 +4026,9 @@ function AllLocationsView({
                                                 return (
                                                     <React.Fragment key={`pkg-${pkg.idx}`}>
                                                         <tr style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}` }}>
-                                                            <td style={tdStyle}><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(location.id, pkg.idx)} /></td>
+                                                            <td style={tdStyle}><input type="checkbox" checked={isSelected} onChange={e => toggleSelect(location.id, pkg.idx, e)} /></td>
                                                             <td style={tdStyle}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>
-                                                            <td style={tdStyle}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px', fontWeight: '700' }} min="1" /></td>
+                                                            <td style={tdStyle}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px', fontWeight: '700' }} min="1" /></td>
                                                             <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isOutOfDate && <span style={{ color: '#f59e0b', fontSize: '11px' }}>⚠</span>}</td>
                                                             <td style={tdStyle}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items × {pkg.qty}</span></td>
@@ -4004,9 +4078,9 @@ function AllLocationsView({
                                                             const itemTotal = calculateItemTotal(item);
                                                             return (
                                                                 <tr key={`legacy-item-${i}`} style={{ backgroundColor: isItemSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }} onContextMenu={e => handleContextMenu(e, location.id, i)}>
-                                                                    <td style={{ ...tdStyle, paddingLeft: '24px' }}><input type="checkbox" checked={isItemSelected} onChange={() => toggleSelect(location.id, i)} /></td>
+                                                                    <td style={{ ...tdStyle, paddingLeft: '24px' }}><input type="checkbox" checked={isItemSelected} onChange={e => toggleSelect(location.id, i, e)} /></td>
                                                                     <td style={tdStyle}></td>
-                                                                    <td style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px' }} min="0" /></td>
+                                                                    <td style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px' }} min="0" /></td>
                                                                     <td style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} /></td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>├ {item.manufacturer}</td>
                                                                     <td style={tdStyle}><strong>{item.model}</strong></td>
@@ -4035,7 +4109,7 @@ function AllLocationsView({
                                                             onContextMenu={e => handleContextMenu(e, location.id, i)}
                                                         >
                                                             <td style={tdStyle}>
-                                                                <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(location.id, i)} />
+                                                                <input type="checkbox" checked={isSelected} onChange={e => toggleSelect(location.id, i, e)} />
                                                             </td>
                                                             <td style={tdStyle}>
                                                                 {hasAccessories && (
@@ -4045,7 +4119,7 @@ function AllLocationsView({
                                                                 )}
                                                             </td>
                                                             <td style={tdStyle}>
-                                                                <input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px' }} min="0" />
+                                                                <input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px' }} min="0" />
                                                             </td>
                                                             <td style={tdStyle}>
                                                                 <input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} />
@@ -4068,7 +4142,7 @@ function AllLocationsView({
                                                                 <td style={tdStyle}></td>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, paddingLeft: '24px' }}>
-                                                                    <input type="number" value={acc.qty} onChange={e => changeAccessoryQty(location.id, i, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px' }} min="0" />
+                                                                    <input type="number" value={acc.qty} onChange={e => changeAccessoryQty(location.id, i, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px' }} min="0" />
                                                                 </td>
                                                                 <td style={tdStyle}>
                                                                     <input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(location.id, i, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '10px' }} />
@@ -6468,7 +6542,7 @@ function App() {
                                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                                             <thead>
                                                 <tr style={{ background: '#161b22' }}>
-                                                    <th style={{ ...styles.th, width: '50px' }}>Qty</th>
+                                                    <th style={{ ...styles.th, width: '60px' }}>Qty</th>
                                                     <th style={styles.th}>Manufacturer</th>
                                                     <th style={styles.th}>Model</th>
                                                     <th style={styles.th}>Part Number</th>
