@@ -1,4 +1,4 @@
-const CACHE_NAME = 'av-estimator-v4';
+const CACHE_NAME = 'av-estimator-v5';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -32,6 +32,12 @@ self.addEventListener('activate', event => {
 // Fetch - network first for HTML/JSON, cache first for static assets
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
+
+  // Pass through Supabase API and CDN requests without caching
+  if (url.hostname.includes('supabase.co') || url.hostname.includes('unpkg.com')) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
   // For HTML and JSON files, always try network first (to get latest code/data)
   if (url.pathname.endsWith('.html') || url.pathname.endsWith('.json') || url.pathname.endsWith('/')) {

@@ -18,6 +18,7 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script crossorigin src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -38,23 +39,24 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 // ============================================================================
 const CONFIG = {
     // GitHub raw content URL - update 'USERNAME' and 'REPO' with your values
-    // Example: https://raw.githubusercontent.com/ablecomm/av-estimator/main/
-    GITHUB_BASE_URL: '', // Leave empty to use local files, or set to GitHub raw URL
-    
+    GITHUB_BASE_URL: '',
+
     // File names
     CATALOG_FILE: 'av_catalog.json',
     PACKAGES_FILE: 'av_packages.json',
-    
-    // Future Azure auth config (leave as-is for now)
-    AZURE_CLIENT_ID: '',
-    AZURE_TENANT_ID: '',
-    SHAREPOINT_ENABLED: false
+
+    // Supabase
+    SUPABASE_URL: 'https://zyxzkwziyysugomjyidb.supabase.co',
+    SUPABASE_ANON_KEY: 'sb_publishable_gnK6VeaiKdehrhoUi-b4Fg_LvsEfjCB',
 };
+
+// Initialize Supabase client
+const supabase = window.supabase ? window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY) : null;
 
 // Helper to get data URL (local or GitHub)
 const getDataUrl = (filename) => {
     if (CONFIG.GITHUB_BASE_URL) {
-        return CONFIG.GITHUB_BASE_URL + filename + '?t=' + Date.now(); // Cache bust
+        return CONFIG.GITHUB_BASE_URL + filename + '?t=' + Date.now();
     }
     return './' + filename;
 };
@@ -3742,7 +3744,7 @@ function RevisionPromptModal({ project, onClose, onCreateRevision }) {
     );
 }
 
-function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelete, onUpdateStatus, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange }) {
+function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelete, onUpdateStatus, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [confirmDelete, setConfirmDelete] = useState(null);
     
@@ -3789,10 +3791,19 @@ function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelet
     return (
         <div style={{ minHeight: '100vh', backgroundColor: '#0f1419' }}>
             {/* Header */}
-            <header style={{ ...styles.header, borderBottom: '1px solid #2f3336' }}>
+            <header style={{ ...styles.header, borderBottom: '1px solid #2f3336', justifyContent: 'space-between' }}>
                 <div style={styles.logo}>
                     <Icons.Layers /> AV Estimator
                 </div>
+                {session && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ fontSize: '12px', color: syncStatus === 'synced' ? '#00ba7c' : syncStatus === 'syncing' ? '#f59e0b' : syncStatus === 'error' ? '#f87171' : '#6e767d' }}>
+                            {syncStatus === 'synced' ? '\u2601 Synced' : syncStatus === 'syncing' ? '\u2601 Syncing...' : syncStatus === 'error' ? '\u2601 Sync error' : '\u2601'}
+                        </span>
+                        <span style={{ fontSize: '13px', color: '#8b98a5' }}>{session.user?.email}</span>
+                        <button onClick={onLogout} style={{ background: 'none', border: '1px solid #30363d', borderRadius: '6px', color: '#8b98a5', padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}>Sign Out</button>
+                    </div>
+                )}
             </header>
             
             {/* Main content */}
@@ -3996,19 +4007,110 @@ function ProjectsHome({ projects, onOpen, onCreate, onEdit, onDuplicate, onDelet
     );
 }
 
+function LoginScreen({ onAuth }) {
+    const [mode, setMode] = useState('signin'); // 'signin' or 'signup'
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [message, setMessage] = useState('');
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        setMessage('');
+        if (!email.trim() || !password) { setError('Email and password are required'); return; }
+        if (mode === 'signup' && password !== confirmPassword) { setError('Passwords do not match'); return; }
+        if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
+
+        setLoading(true);
+        try {
+            if (mode === 'signup') {
+                const { data, error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+                if (err) throw err;
+                if (data.user && !data.session) {
+                    setMessage('Check your email for a confirmation link.');
+                } else if (data.session) {
+                    onAuth(data.session);
+                }
+            } else {
+                const { data, error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+                if (err) throw err;
+                onAuth(data.session);
+            }
+        } catch (err) {
+            setError(err.message || 'Authentication failed');
+        }
+        setLoading(false);
+    };
+
+    const inputStyle = { width: '100%', padding: '12px 16px', background: '#0d1117', border: '1px solid #30363d', borderRadius: '8px', color: '#e7e9ea', fontSize: '15px', outline: 'none' };
+
+    return (
+        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0d1117', padding: '20px' }}>
+            <div style={{ width: '100%', maxWidth: '400px' }}>
+                <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+                    <div style={{ fontSize: '48px', marginBottom: '8px' }}>
+                        <svg width="48" height="48" viewBox="0 0 192 192" fill="none"><rect width="192" height="192" rx="40" fill="#1d9bf0"/><text x="96" y="125" textAnchor="middle" fill="white" fontSize="90" fontWeight="bold" fontFamily="system-ui">AV</text></svg>
+                    </div>
+                    <h1 style={{ color: '#e7e9ea', fontSize: '24px', fontWeight: '700', margin: '8px 0 4px' }}>AV Estimator</h1>
+                    <p style={{ color: '#8b98a5', fontSize: '14px' }}>{mode === 'signin' ? 'Sign in to your account' : 'Create a new account'}</p>
+                </div>
+                <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email address" style={inputStyle} autoFocus />
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" style={inputStyle} />
+                    {mode === 'signup' && (
+                        <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Confirm password" style={inputStyle} />
+                    )}
+                    {error && <div style={{ color: '#f87171', fontSize: '13px', padding: '8px 12px', background: '#3d1a1a', borderRadius: '6px' }}>{error}</div>}
+                    {message && <div style={{ color: '#00ba7c', fontSize: '13px', padding: '8px 12px', background: '#1a3d2e', borderRadius: '6px' }}>{message}</div>}
+                    <button type="submit" disabled={loading} style={{ padding: '12px', background: '#1d9bf0', color: 'white', border: 'none', borderRadius: '8px', fontSize: '15px', fontWeight: '600', cursor: loading ? 'wait' : 'pointer', opacity: loading ? 0.7 : 1 }}>
+                        {loading ? 'Please wait...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
+                    </button>
+                </form>
+                <div style={{ textAlign: 'center', marginTop: '20px' }}>
+                    <button onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(''); setMessage(''); }} style={{ background: 'none', border: 'none', color: '#1d9bf0', cursor: 'pointer', fontSize: '14px' }}>
+                        {mode === 'signin' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function App() {
+    // Auth state
+    const [session, setSession] = useState(null);
+    const [authLoading, setAuthLoading] = useState(true);
+    const [syncStatus, setSyncStatus] = useState('idle'); // 'idle', 'syncing', 'synced', 'error'
+    const syncTimer = React.useRef(null);
+
+    // Auth listener
+    useEffect(() => {
+        if (!supabase) { setAuthLoading(false); return; }
+        supabase.auth.getSession().then(({ data: { session } }) => {
+            setSession(session);
+            setAuthLoading(false);
+        });
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            setSession(session);
+        });
+        return () => subscription.unsubscribe();
+    }, []);
+
     // Multi-project state
     const [projects, setProjects] = useState([]);
     const [activeProjectId, setActiveProjectId] = useState(null);
     const [showProjectsHome, setShowProjectsHome] = useState(true);
     const [showNewProjectModal, setShowNewProjectModal] = useState(false);
     const hasLoaded = React.useRef(false);
-    const [editingProject, setEditingProject] = useState(null); // Project being edited
+    const [editingProject, setEditingProject] = useState(null);
     const [showProjectSettings, setShowProjectSettings] = useState(false);
     const [showRevisionPrompt, setShowRevisionPrompt] = useState(false);
     const [pendingMutation, setPendingMutation] = useState(null);
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
-    const [projectFilter, setProjectFilter] = useState('active'); // 'all', 'active', 'archived', 'won', 'lost'
+    const [projectFilter, setProjectFilter] = useState('active');
     
     // Current project state (when a project is open)
     const [tab, setTab] = useState('project');
@@ -4025,6 +4127,37 @@ function App() {
     
     const loadCatalogData = async () => {
         setCatalogSyncStatus('syncing');
+
+        // Try Supabase first
+        if (supabase && session) {
+            try {
+                const { data, error } = await supabase.from('catalog').select('*');
+                if (!error && data?.length > 0) {
+                    const mapped = data.map(row => ({
+                        id: row.id,
+                        manufacturer: row.manufacturer || '',
+                        model: row.model || '',
+                        partNumber: row.part_number || '',
+                        description: row.description || '',
+                        category: row.category || '',
+                        subcategory: row.subcategory || '',
+                        unitCost: Number(row.unit_cost || 0),
+                        laborHrsPerUnit: Number(row.labor_hrs_per_unit || 0),
+                        uom: row.uom || 'EA',
+                        vendor: row.vendor || '',
+                        discontinued: !!row.discontinued,
+                    }));
+                    setCatalog(mapped);
+                    localStorage.setItem('av-estimator-catalog', JSON.stringify(mapped));
+                    setCatalogSyncStatus('synced');
+                    return;
+                }
+            } catch (e) {
+                console.log('Failed to fetch Supabase catalog, trying file');
+            }
+        }
+
+        // Fall back to file fetch
         try {
             const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
             if (response.ok) {
@@ -4037,7 +4170,7 @@ function App() {
         } catch (e) {
             console.log('Failed to fetch remote catalog, using local');
         }
-        
+
         // Fall back to localStorage
         const saved = localStorage.getItem('av-estimator-catalog');
         if (saved) {
@@ -4047,7 +4180,7 @@ function App() {
                 return;
             } catch (e) {}
         }
-        
+
         // Fall back to defaults
         setCatalog(DEFAULT_CATALOG);
         setCatalogSyncStatus('local');
@@ -4256,6 +4389,12 @@ function App() {
         if (activeProjectId === projectId) {
             closeProject();
         }
+        // Delete from Supabase
+        if (supabase && session) {
+            supabase.from('projects').delete().eq('id', projectId).then(({ error }) => {
+                if (error) console.error('Failed to delete from Supabase:', error);
+            });
+        }
         showToast('Project deleted');
     };
     
@@ -4300,11 +4439,42 @@ function App() {
         return { cost, labor, items };
     };
 
-    // Auto-save to localStorage (skip until initial load completes)
+    // Auto-save to localStorage + Supabase sync (skip until initial load completes)
     useEffect(() => {
         if (!hasLoaded.current) return;
         const data = { projects, packages, templates, activeProjectId };
         localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
+
+        // Debounced sync to Supabase
+        if (supabase && session) {
+            clearTimeout(syncTimer.current);
+            syncTimer.current = setTimeout(async () => {
+                setSyncStatus('syncing');
+                try {
+                    // Upsert each project
+                    for (const p of projects) {
+                        const { error } = await supabase.from('projects').upsert({
+                            id: p.id,
+                            user_id: session.user.id,
+                            data: p,
+                            updated_at: p.updatedAt || new Date().toISOString(),
+                        });
+                        if (error) throw error;
+                    }
+                    // Sync packages/templates
+                    await supabase.from('user_settings').upsert({
+                        user_id: session.user.id,
+                        packages,
+                        templates,
+                        updated_at: new Date().toISOString(),
+                    });
+                    setSyncStatus('synced');
+                } catch (err) {
+                    console.error('Sync error:', err);
+                    setSyncStatus('error');
+                }
+            }, 2000);
+        }
     }, [projects, packages, templates, activeProjectId]);
     
     // Save catalog to localStorage when it changes
@@ -4357,7 +4527,49 @@ function App() {
         }
         hasLoaded.current = true;
     }, []);
-    
+
+    // Sync with Supabase after login
+    useEffect(() => {
+        if (!supabase || !session || !hasLoaded.current) return;
+        const syncFromSupabase = async () => {
+            setSyncStatus('syncing');
+            try {
+                // Pull remote projects
+                const { data: remoteRows, error: projErr } = await supabase
+                    .from('projects')
+                    .select('id, data, updated_at');
+                if (!projErr && remoteRows?.length > 0) {
+                    const remote = remoteRows.map(r => r.data);
+                    setProjects(prev => {
+                        const merged = {};
+                        [...prev, ...remote].forEach(p => {
+                            if (!merged[p.id] || new Date(p.updatedAt) > new Date(merged[p.id].updatedAt)) {
+                                merged[p.id] = p;
+                            }
+                        });
+                        return Object.values(merged);
+                    });
+                }
+
+                // Pull remote packages/templates
+                const { data: settings } = await supabase
+                    .from('user_settings')
+                    .select('packages, templates')
+                    .single();
+                if (settings) {
+                    if (settings.packages?.length > 0) setPackages(prev => prev.length > 0 ? prev : settings.packages);
+                    if (settings.templates && Object.keys(settings.templates).length > 0) setTemplates(prev => Object.keys(prev).length > 0 ? prev : settings.templates);
+                }
+
+                setSyncStatus('synced');
+            } catch (err) {
+                console.error('Supabase sync error:', err);
+                setSyncStatus('error');
+            }
+        };
+        syncFromSupabase();
+    }, [session]);
+
     // Save to history for undo
     useEffect(() => {
         if (!isUndoRedo.current && activeProjectId && project.locations?.length > 0) {
@@ -5064,11 +5276,23 @@ function App() {
     const selectedDepth = selected ? getDepth(selected.id) : -1;
     const projectTotals = (project.locations || []).reduce((acc, loc) => { const t = calculateTotals(loc); return { cost: acc.cost + t.cost, labor: acc.labor + t.labor, itemCount: acc.itemCount + t.itemCount }; }, { cost: 0, labor: 0, itemCount: 0 });
 
+    // Auth gate
+    if (authLoading) {
+        return (
+            <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0d1117', color: '#8b98a5', fontSize: '16px' }}>
+                Loading...
+            </div>
+        );
+    }
+    if (supabase && !session) {
+        return <LoginScreen onAuth={setSession} />;
+    }
+
     // Show projects home if no project is open
     if (showProjectsHome) {
         return (
             <>
-                <ProjectsHome 
+                <ProjectsHome
                     projects={projects}
                     onOpen={openProject}
                     onCreate={() => setShowNewProjectModal(true)}
@@ -5081,6 +5305,9 @@ function App() {
                     onSearchChange={setProjectSearchTerm}
                     filter={projectFilter}
                     onFilterChange={setProjectFilter}
+                    session={session}
+                    syncStatus={syncStatus}
+                    onLogout={() => { supabase && supabase.auth.signOut(); }}
                 />
                 {showNewProjectModal && (
                     <NewProjectModal 

@@ -5,3 +5,6 @@
 convert-xlsx.py
 test-project.json
 load-test-data.html
+import-catalog.py
+import-catalog-data.sql
+supabase-schema.sql
