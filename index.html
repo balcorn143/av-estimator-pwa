@@ -2760,8 +2760,8 @@ function CatalogItemModal({ item, onClose, onSave, categories }) {
     const [showNewCategory, setShowNewCategory] = useState(false);
     const [showNewSubcategory, setShowNewSubcategory] = useState(false);
     
-    const existingCategories = [...new Set(categories.map(c => c.category))].sort();
-    const existingSubcategories = [...new Set(categories.filter(c => c.category === form.category).map(c => c.subcategory))].sort();
+    const existingCategories = [...new Set(categories.map(c => c.category).concat(form.category ? [form.category] : []))].filter(Boolean).sort();
+    const existingSubcategories = [...new Set(categories.filter(c => c.category === form.category).map(c => c.subcategory).concat(form.subcategory ? [form.subcategory] : []))].filter(Boolean).sort();
     
     const handleSubmit = () => {
         if (!form.manufacturer.trim() || !form.model.trim()) return;
