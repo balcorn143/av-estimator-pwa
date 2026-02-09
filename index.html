@@ -3000,48 +3000,52 @@ function CatalogConflictModal({ conflicts, onResolve, onClose }) {
 
 // Labor by Phase Report Component
 function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGroups }) {
+    // Rows = locations/groups, Columns = phases
     const data = useMemo(() => {
-        // Use hierarchy groups if provided, otherwise one group per leaf location
+        // Use hierarchy groups if provided, otherwise one row per leaf location (full path)
         const groups = hierarchyGroups || getLocationsWithItems(locations).map(loc => ({
             name: loc.path || loc.name,
             locations: [loc],
         }));
-        const phaseMap = {}; // { phaseName: { groupName: hours, ... } }
+        // locationMap: { groupName: { phaseName: hours } }
+        const locationMap = {};
         const groupNames = groups.map(g => g.name);
+        const phaseSet = new Set();
 
         for (const group of groups) {
+            if (!locationMap[group.name]) locationMap[group.name] = {};
             for (const loc of group.locations) {
                 const flatItems = getFlattenedItems(loc, catalogPkgs, projectPkgs);
                 for (const item of flatItems) {
                     const phase = item.phase || 'Unphased';
                     const hrs = (item.qty || 0) * (item.laborHrsPerUnit || 0);
-                    if (!phaseMap[phase]) phaseMap[phase] = {};
-                    phaseMap[phase][group.name] = (phaseMap[phase][group.name] || 0) + hrs;
+                    phaseSet.add(phase);
+                    locationMap[group.name][phase] = (locationMap[group.name][phase] || 0) + hrs;
                     // Include accessories
                     if (item.accessories) {
                         for (const acc of item.accessories) {
                             const accPhase = acc.phase || phase; // inherit parent phase if empty
                             const accHrs = (acc.qty || 0) * (acc.laborHrsPerUnit || 0);
-                            if (!phaseMap[accPhase]) phaseMap[accPhase] = {};
-                            phaseMap[accPhase][group.name] = (phaseMap[accPhase][group.name] || 0) + accHrs;
+                            phaseSet.add(accPhase);
+                            locationMap[group.name][accPhase] = (locationMap[group.name][accPhase] || 0) + accHrs;
                         }
                     }
                 }
             }
         }
 
-        const phases = Object.keys(phaseMap).sort((a, b) => a === 'Unphased' ? 1 : b === 'Unphased' ? -1 : a.localeCompare(b));
-        return { phases, phaseMap, groupNames };
+        const phases = [...phaseSet].sort((a, b) => a === 'Unphased' ? 1 : b === 'Unphased' ? -1 : a.localeCompare(b));
+        return { phases, locationMap, groupNames };
     }, [locations, catalogPkgs, projectPkgs, hierarchyGroups]);
 
     const exportLaborByPhase = () => {
-        const { phases, phaseMap, groupNames } = data;
-        const header = ['Phase', ...groupNames, 'Total'];
-        const rows = phases.map(phase => {
-            const row = [phase];
+        const { phases, locationMap, groupNames } = data;
+        const header = ['Location', ...phases, 'Total'];
+        const rows = groupNames.map(gn => {
+            const row = [gn];
             let total = 0;
-            for (const gn of groupNames) {
-                const hrs = phaseMap[phase][gn] || 0;
+            for (const phase of phases) {
+                const hrs = locationMap[gn][phase] || 0;
                 row.push(Math.round(hrs * 100) / 100);
                 total += hrs;
             }
@@ -3051,9 +3055,9 @@ function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGrou
         // Column totals
         const totalsRow = ['TOTAL'];
         let grandTotal = 0;
-        for (const gn of groupNames) {
+        for (const phase of phases) {
             let colTotal = 0;
-            for (const phase of phases) colTotal += phaseMap[phase][gn] || 0;
+            for (const gn of groupNames) colTotal += locationMap[gn][phase] || 0;
             totalsRow.push(Math.round(colTotal * 100) / 100);
             grandTotal += colTotal;
         }
@@ -3065,7 +3069,7 @@ function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGrou
         XLSX.writeFile(wb, 'Labor by Phase.xlsx');
     };
 
-    const { phases, phaseMap, groupNames } = data;
+    const { phases, locationMap, groupNames } = data;
     if (phases.length === 0) return <p style={{ color: '#8b98a5', fontSize: '13px' }}>No labor data found. Add items with labor hours to see the breakdown.</p>;
 
     return (
@@ -3080,21 +3084,21 @@ function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGrou
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', tableLayout: 'auto' }}>
                     <thead>
                         <tr style={{ background: '#161b22' }}>
-                            <th style={{ ...styles.th, minWidth: '120px' }}>Phase</th>
-                            {groupNames.map(gn => <th key={gn} style={{ ...styles.th, minWidth: '90px', textAlign: 'right' }}>{gn}</th>)}
+                            <th style={{ ...styles.th, minWidth: '200px' }}>Location</th>
+                            {phases.map(phase => <th key={phase} style={{ ...styles.th, minWidth: '90px', textAlign: 'right' }}>{phase}</th>)}
                             <th style={{ ...styles.th, minWidth: '90px', textAlign: 'right', fontWeight: '700' }}>Total</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {phases.map(phase => {
+                        {groupNames.map(gn => {
                             let rowTotal = 0;
                             return (
-                                <tr key={phase} style={{ borderBottom: '1px solid #2f3336' }}>
-                                    <td style={{ ...styles.td, fontWeight: '600' }}>{phase === 'Unphased' ? <span style={{ color: '#6e767d', fontStyle: 'italic' }}>Unphased</span> : <span style={styles.badge('purple')}>{phase}</span>}</td>
-                                    {groupNames.map(gn => {
-                                        const hrs = phaseMap[phase][gn] || 0;
+                                <tr key={gn} style={{ borderBottom: '1px solid #2f3336' }}>
+                                    <td style={{ ...styles.td, fontWeight: '600', whiteSpace: 'nowrap' }}>{gn}</td>
+                                    {phases.map(phase => {
+                                        const hrs = locationMap[gn][phase] || 0;
                                         rowTotal += hrs;
-                                        return <td key={gn} style={{ ...styles.td, textAlign: 'right' }}>{hrs > 0 ? fmtHrs(hrs) : '-'}</td>;
+                                        return <td key={phase} style={{ ...styles.td, textAlign: 'right' }}>{hrs > 0 ? fmtHrs(hrs) : '-'}</td>;
                                     })}
                                     <td style={{ ...styles.td, textAlign: 'right', fontWeight: '600' }}>{fmtHrs(rowTotal)}</td>
                                 </tr>
@@ -3102,12 +3106,12 @@ function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGrou
                         })}
                         <tr style={{ background: '#161b22', fontWeight: '700' }}>
                             <td style={{ ...styles.td }}>TOTAL</td>
-                            {groupNames.map(gn => {
+                            {phases.map(phase => {
                                 let colTotal = 0;
-                                for (const phase of phases) colTotal += phaseMap[phase][gn] || 0;
-                                return <td key={gn} style={{ ...styles.td, textAlign: 'right' }}>{fmtHrs(colTotal)}</td>;
+                                for (const gn of groupNames) colTotal += locationMap[gn][phase] || 0;
+                                return <td key={phase} style={{ ...styles.td, textAlign: 'right' }}>{fmtHrs(colTotal)}</td>;
                             })}
-                            <td style={{ ...styles.td, textAlign: 'right', color: '#1d9bf0' }}>{(() => { let gt = 0; for (const phase of phases) for (const gn of groupNames) gt += phaseMap[phase][gn] || 0; return fmtHrs(gt); })()}</td>
+                            <td style={{ ...styles.td, textAlign: 'right', color: '#1d9bf0' }}>{(() => { let gt = 0; for (const gn of groupNames) for (const phase of phases) gt += locationMap[gn][phase] || 0; return fmtHrs(gt); })()}</td>
                         </tr>
                     </tbody>
                 </table>
@@ -6805,7 +6809,6 @@ function App() {
                             if (bomItems.length === 0) return <p style={{ color: '#8b98a5' }}>No components in project. Add items to locations to see the consolidated BOM.</p>;
                             let totalCost = 0, totalLabor = 0;
                             bomItems.forEach(b => { totalCost += b.totalQty * b.unitCost; totalLabor += b.totalQty * b.laborHrsPerUnit; });
-                            let currentCategory = '';
                             return (
                                 <div>
                                     <h3 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -6835,13 +6838,8 @@ function App() {
                                             </thead>
                                             <tbody>
                                                 {bomItems.map((b, idx) => {
-                                                    const showCategory = b.category !== currentCategory;
-                                                    if (showCategory) currentCategory = b.category;
                                                     return (
                                                         <React.Fragment key={b.key}>
-                                                            {showCategory && (
-                                                                <tr><td colSpan={bomCols.length} style={{ padding: '8px 12px', background: '#1a1f26', fontWeight: '700', fontSize: '12px', color: '#8b98a5', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '1px solid #2f3336' }}>{b.category || 'Uncategorized'}</td></tr>
-                                                            )}
                                                             <tr style={{ borderBottom: '1px solid #2f3336' }} title={b.locations.join(', ')}>
                                                                 {bomCols.map(col => {
                                                                     switch (col.id) {
