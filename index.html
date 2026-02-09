@@ -104,6 +104,7 @@ const DEFAULT_CATALOG = [
 
 // Unit of Measure options
 const UOM_OPTIONS = ['EA', 'FT', 'M', 'PR', 'SET', 'BOX', 'ROLL', 'LOT'];
+const SYSTEM_OPTIONS = ['Audio', 'Video', 'Control', 'Infrastructure'];
 
 // Generate unique catalog ID
 const generateCatalogId = () => 'cat-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
@@ -1039,11 +1040,14 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
         }
     };
     
-    const insert = () => { 
-        if (selected.length > 0) { 
-            onInsert(selected, qty); 
-            onClose(); 
-        } 
+    const [addedFeedback, setAddedFeedback] = useState('');
+    const insert = () => {
+        if (selected.length > 0) {
+            onInsert(selected, qty);
+            setAddedFeedback(`Added ${selected.length} item${selected.length > 1 ? 's' : ''}`);
+            setSelected([]);
+            setTimeout(() => setAddedFeedback(''), 2000);
+        }
     };
     
     const clearFilters = () => {
@@ -1219,7 +1223,7 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
                             return (
                                 <div key={pkg.id}
                                     style={{ ...styles.searchItem(false), backgroundColor: c.bg, borderLeft: `3px solid ${c.b}` }}
-                                    onClick={() => { onInsertPkg(pkg, qty); onClose(); }}>
+                                    onClick={() => { onInsertPkg(pkg, qty); setAddedFeedback(`Added package: ${pkg.name}`); setTimeout(() => setAddedFeedback(''), 2000); }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                             <Icons.Package />
@@ -1315,7 +1319,8 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
                         {selected.length > 0 && 'Press Enter to add • '}
                         Ctrl+Click for multi-select • <kbd style={{ backgroundColor: '#2f3336', padding: '1px 5px', borderRadius: '3px', fontSize: '11px' }}>Ctrl+K</kbd> to open
                     </span>}
-                    <button style={styles.button('secondary')} onClick={onClose}>Cancel</button>
+                    {addedFeedback && <span style={{ color: '#00ba7c', fontSize: '13px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}><Icons.Check /> {addedFeedback}</span>}
+                    <button style={styles.button('secondary')} onClick={onClose}>Close</button>
                     {tab === 'components' && (
                         <button
                             style={{ ...styles.button('primary'), opacity: selected.length === 0 ? 0.5 : 1 }}
@@ -1343,7 +1348,9 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
                                     isCustom: true,
                                 };
                                 onInsert([item], qty);
-                                onClose();
+                                setAddedFeedback('Added custom item');
+                                setCustomItem({ manufacturer: '', model: '', partNumber: '', description: '', category: '', subcategory: '', unitCost: '', laborHrsPerUnit: '', uom: 'EA' });
+                                setTimeout(() => setAddedFeedback(''), 2000);
                             }}
                             disabled={!customItem.manufacturer && !customItem.model && !customItem.description}>
                             <Icons.Plus /> Add Custom Item
@@ -1824,6 +1831,7 @@ const DEFAULT_COLUMNS = [
     { id: 'expand', label: '', width: 30, fixed: true },
     { id: 'qty', label: 'Qty', width: 75 },
     { id: 'notes', label: 'Notes', width: 120 },
+    { id: 'system', label: 'System', width: 100 },
     { id: 'manufacturer', label: 'Manufacturer', width: 120 },
     { id: 'model', label: 'Model', width: 140 },
     { id: 'description', label: 'Description', width: 200 },
@@ -1941,7 +1949,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
     };
     
     // Render a cell based on column ID for main items
-    const renderItemCell = (col, item, itemIdx, { isSelected, hasAccessories, isExpanded, itemTotal, isPackageItem, pkgColor, changeQty, changeNotes, toggleSelect, toggleItemExpand }) => {
+    const renderItemCell = (col, item, itemIdx, { isSelected, hasAccessories, isExpanded, itemTotal, isPackageItem, pkgColor, changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand }) => {
         const tdStyle = { ...styles.td, ...compactStyles.td };
         const inputStyle = { ...styles.inputSmall, ...compactStyles.input };
         switch (col.id) {
@@ -1957,6 +1965,8 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                 return <td key={col.id} style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(itemIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} min="0" /></td>;
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(itemIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '10px' : '11px' }} /></td>;
+            case 'system':
+                return <td key={col.id} style={tdStyle}><select value={item.system || ''} onChange={e => changeSystem(itemIdx, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>;
             case 'manufacturer':
                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px', color: isPackageItem ? '#8b98a5' : undefined }}>{isPackageItem && <span style={{ color: '#6e767d' }}>├ </span>}{item.manufacturer}</td>;
             case 'model':
@@ -1989,6 +1999,8 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                 return <td key={col.id} style={{ ...tdStyle, paddingLeft: pkgColor ? '40px' : '24px' }}><input type="number" value={acc.qty} onChange={e => changeAccessoryQty(itemIdx, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} min="0" /></td>;
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(itemIdx, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
+            case 'system':
+                return <td key={col.id} style={tdStyle}></td>;
             case 'manufacturer':
                 return <td key={col.id} style={tdStyle}><span style={{ color: '#4a5568' }}>└ </span>{acc.manufacturer}</td>;
             case 'model':
@@ -2141,7 +2153,13 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
         items[itemIdx] = { ...items[itemIdx], notes };
         onUpdate(location.id, items);
     };
-    
+
+    const changeSystem = (itemIdx, system) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], system };
+        onUpdate(location.id, items);
+    };
+
     const changeAccessoryNotes = (itemIdx, accIdx, notes) => {
         const items = [...location.items];
         items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, notes } : a) };
@@ -2514,7 +2532,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                                         {columns.map(col => renderItemCell(col, item, i, {
                                                             isSelected: isItemSelected, hasAccessories: item.accessories?.length > 0, isExpanded: expandedItems[i] !== false, itemTotal,
                                                             isPackageItem: true, pkgColor,
-                                                            changeQty, changeNotes, toggleSelect, toggleItemExpand
+                                                            changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand
                                                         }))}
                                                     </tr>
                                                 );
@@ -2536,10 +2554,10 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                             <tr 
                                                 style={{ backgroundColor: isSelected ? '#1d3a5c' : 'transparent', cursor: 'context-menu' }}
                                                 onContextMenu={e => handleContextMenu(e, i, false, null)}>
-                                                {columns.map(col => renderItemCell(col, item, i, { 
-                                                    isSelected, hasAccessories, isExpanded, itemTotal, 
-                                                    isPackageItem: false, pkgColor: null, 
-                                                    changeQty, changeNotes, toggleSelect, toggleItemExpand 
+                                                {columns.map(col => renderItemCell(col, item, i, {
+                                                    isSelected, hasAccessories, isExpanded, itemTotal,
+                                                    isPackageItem: false, pkgColor: null,
+                                                    changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand
                                                 }))}
                                             </tr>
                                             
@@ -3833,6 +3851,7 @@ function AllLocationsView({
         { id: 'expand', label: '', width: 30, fixed: true },
         { id: 'qty', label: 'Qty', width: 75 },
         { id: 'notes', label: 'Notes', width: 120 },
+        { id: 'system', label: 'System', width: 100 },
         { id: 'manufacturer', label: 'Manufacturer', width: 120 },
         { id: 'model', label: 'Model', width: 140 },
         { id: 'description', label: 'Description', width: 200 },
@@ -3933,7 +3952,15 @@ function AllLocationsView({
             return newItems;
         });
     };
-    
+
+    const changeSystem = (locationId, itemIdx, system) => {
+        onUpdate(locationId, (items) => {
+            const newItems = [...items];
+            newItems[itemIdx] = { ...newItems[itemIdx], system };
+            return newItems;
+        });
+    };
+
     const changeAccessoryQty = (locationId, itemIdx, accIdx, q) => {
         onUpdate(locationId, (items) => {
             const newItems = [...items];
@@ -4238,6 +4265,7 @@ function AllLocationsView({
                                                             <td style={tdStyle}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>
                                                             <td style={tdStyle}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px', fontWeight: '700' }} min="1" /></td>
                                                             <td style={tdStyle}></td>
+                                                            <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isOutOfDate && <span style={{ color: '#f59e0b', fontSize: '11px' }}>⚠</span>}</td>
                                                             <td style={tdStyle}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items × {pkg.qty}</span></td>
                                                             <td style={tdStyle}>{pkg.instance.notes || ''}</td>
@@ -4251,6 +4279,7 @@ function AllLocationsView({
                                                                 <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, color: '#8b98a5', fontSize: '12px' }}>{fmtQty(item.qty)}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}×{pkg.qty}</td>
+                                                                <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>├ {item.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, color: '#1d9bf0', fontSize: '12px' }}>{item.model}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.description}</td>
@@ -4290,6 +4319,7 @@ function AllLocationsView({
                                                                     <td style={tdStyle}></td>
                                                                     <td style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px' }} min="0" /></td>
                                                                     <td style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} /></td>
+                                                                    <td style={tdStyle}><select value={item.system || ''} onChange={e => changeSystem(location.id, i, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>├ {item.manufacturer}</td>
                                                                     <td style={tdStyle}><strong>{item.model}</strong></td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px' }}>{item.description}</td>
@@ -4332,6 +4362,9 @@ function AllLocationsView({
                                                             <td style={tdStyle}>
                                                                 <input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} />
                                                             </td>
+                                                            <td style={tdStyle}>
+                                                                <select value={item.system || ''} onChange={e => changeSystem(location.id, i, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select>
+                                                            </td>
                                                             <td style={{ ...tdStyle, fontSize: '12px' }}>{item.manufacturer}</td>
                                                             <td style={tdStyle}><strong>{item.model}</strong></td>
                                                             <td style={{ ...tdStyle, fontSize: '12px' }}>
@@ -4355,6 +4388,7 @@ function AllLocationsView({
                                                                 <td style={tdStyle}>
                                                                     <input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(location.id, i, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '10px' }} />
                                                                 </td>
+                                                                <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>└ {acc.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.model}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.description}</td>
