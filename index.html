@@ -533,9 +533,10 @@ function getHierarchyLevels(locations) {
     const maxDepth = allFlat.reduce((max, loc) => Math.max(max, loc.depth), 0);
     for (let d = 0; d <= maxDepth; d++) {
         const namesAtDepth = allFlat.filter(l => l.depth === d).map(l => l.name);
-        const examples = namesAtDepth.slice(0, 3).join(', ');
-        const extra = namesAtDepth.length > 3 ? ', ...' : '';
-        levels.push({ depth: d, label: `Level ${d + 1} (${examples}${extra})` });
+        const unique = [...new Set(namesAtDepth)];
+        const examples = unique.slice(0, 3).join(', ');
+        const extra = unique.length > 3 ? ', ...' : '';
+        levels.push({ depth: d, label: `By: ${examples}${extra}` });
     }
     return levels;
 }
@@ -557,7 +558,7 @@ function getGroupedByHierarchy(locations, targetDepth, catalogPkgs, projectPkgs)
                 // This node is at target depth - collect all descendant leaf locations
                 const descendantLeaves = getLocationsWithItems([loc], parentPath);
                 if (descendantLeaves.length > 0) {
-                    groups.push({ name: loc.name, path, locations: descendantLeaves });
+                    groups.push({ name: path, path, locations: descendantLeaves });
                 }
             } else if (loc.children && currentDepth < targetDepth) {
                 groups = groups.concat(collectAtDepth(loc.children, currentDepth + 1, path));
