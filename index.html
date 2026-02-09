@@ -526,6 +526,48 @@ function getLocationsWithItems(locations, parentPath = '') {
     return result;
 }
 
+// Get available hierarchy levels from location tree
+function getHierarchyLevels(locations) {
+    const levels = [{ depth: -1, label: 'Entire Project' }];
+    const allFlat = getAllLocationsFlatted(locations);
+    const maxDepth = allFlat.reduce((max, loc) => Math.max(max, loc.depth), 0);
+    for (let d = 0; d <= maxDepth; d++) {
+        const namesAtDepth = allFlat.filter(l => l.depth === d).map(l => l.name);
+        const examples = namesAtDepth.slice(0, 3).join(', ');
+        const extra = namesAtDepth.length > 3 ? ', ...' : '';
+        levels.push({ depth: d, label: `Level ${d + 1} (${examples}${extra})` });
+    }
+    return levels;
+}
+
+// Group locations by hierarchy depth for reports
+// Returns array of { name, path, locations: [leaf locations with items] }
+function getGroupedByHierarchy(locations, targetDepth, catalogPkgs, projectPkgs) {
+    if (targetDepth === -1) {
+        // Entire project = one group
+        const locsWithItems = getLocationsWithItems(locations);
+        return [{ name: 'Entire Project', path: '', locations: locsWithItems }];
+    }
+    // Collect nodes at the target depth
+    const collectAtDepth = (locs, currentDepth, parentPath) => {
+        let groups = [];
+        for (const loc of locs) {
+            const path = parentPath ? `${parentPath} > ${loc.name}` : loc.name;
+            if (currentDepth === targetDepth) {
+                // This node is at target depth - collect all descendant leaf locations
+                const descendantLeaves = getLocationsWithItems([loc], parentPath);
+                if (descendantLeaves.length > 0) {
+                    groups.push({ name: loc.name, path, locations: descendantLeaves });
+                }
+            } else if (loc.children && currentDepth < targetDepth) {
+                groups = groups.concat(collectAtDepth(loc.children, currentDepth + 1, path));
+            }
+        }
+        return groups;
+    };
+    return collectAtDepth(locations, 0, '');
+}
+
 function cloneStructure(location, newName, includeItems = true) {
     return {
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
@@ -2956,6 +2998,140 @@ function CatalogConflictModal({ conflicts, onResolve, onClose }) {
     );
 }
 
+// Labor by Phase Report Component
+function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGroups }) {
+    const data = useMemo(() => {
+        // Use hierarchy groups if provided, otherwise one group per leaf location
+        const groups = hierarchyGroups || getLocationsWithItems(locations).map(loc => ({
+            name: loc.path || loc.name,
+            locations: [loc],
+        }));
+        const phaseMap = {}; // { phaseName: { groupName: hours, ... } }
+        const groupNames = groups.map(g => g.name);
+
+        for (const group of groups) {
+            for (const loc of group.locations) {
+                const flatItems = getFlattenedItems(loc, catalogPkgs, projectPkgs);
+                for (const item of flatItems) {
+                    const phase = item.phase || 'Unphased';
+                    const hrs = (item.qty || 0) * (item.laborHrsPerUnit || 0);
+                    if (!phaseMap[phase]) phaseMap[phase] = {};
+                    phaseMap[phase][group.name] = (phaseMap[phase][group.name] || 0) + hrs;
+                    // Include accessories
+                    if (item.accessories) {
+                        for (const acc of item.accessories) {
+                            const accPhase = acc.phase || phase; // inherit parent phase if empty
+                            const accHrs = (acc.qty || 0) * (acc.laborHrsPerUnit || 0);
+                            if (!phaseMap[accPhase]) phaseMap[accPhase] = {};
+                            phaseMap[accPhase][group.name] = (phaseMap[accPhase][group.name] || 0) + accHrs;
+                        }
+                    }
+                }
+            }
+        }
+
+        const phases = Object.keys(phaseMap).sort((a, b) => a === 'Unphased' ? 1 : b === 'Unphased' ? -1 : a.localeCompare(b));
+        return { phases, phaseMap, groupNames };
+    }, [locations, catalogPkgs, projectPkgs, hierarchyGroups]);
+
+    const exportLaborByPhase = () => {
+        const { phases, phaseMap, groupNames } = data;
+        const header = ['Phase', ...groupNames, 'Total'];
+        const rows = phases.map(phase => {
+            const row = [phase];
+            let total = 0;
+            for (const gn of groupNames) {
+                const hrs = phaseMap[phase][gn] || 0;
+                row.push(Math.round(hrs * 100) / 100);
+                total += hrs;
+            }
+            row.push(Math.round(total * 100) / 100);
+            return row;
+        });
+        // Column totals
+        const totalsRow = ['TOTAL'];
+        let grandTotal = 0;
+        for (const gn of groupNames) {
+            let colTotal = 0;
+            for (const phase of phases) colTotal += phaseMap[phase][gn] || 0;
+            totalsRow.push(Math.round(colTotal * 100) / 100);
+            grandTotal += colTotal;
+        }
+        totalsRow.push(Math.round(grandTotal * 100) / 100);
+        const wsData = [header, ...rows, totalsRow];
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        XLSX.utils.book_append_sheet(wb, ws, 'Labor by Phase');
+        XLSX.writeFile(wb, 'Labor by Phase.xlsx');
+    };
+
+    const { phases, phaseMap, groupNames } = data;
+    if (phases.length === 0) return <p style={{ color: '#8b98a5', fontSize: '13px' }}>No labor data found. Add items with labor hours to see the breakdown.</p>;
+
+    return (
+        <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                <h3 style={{ margin: 0, fontSize: '20px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    Labor by Phase
+                </h3>
+                <button style={styles.smallButton} onClick={exportLaborByPhase}><Icons.Download /> Export</button>
+            </div>
+            <div style={{ overflowX: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', tableLayout: 'auto' }}>
+                    <thead>
+                        <tr style={{ background: '#161b22' }}>
+                            <th style={{ ...styles.th, minWidth: '120px' }}>Phase</th>
+                            {groupNames.map(gn => <th key={gn} style={{ ...styles.th, minWidth: '90px', textAlign: 'right' }}>{gn}</th>)}
+                            <th style={{ ...styles.th, minWidth: '90px', textAlign: 'right', fontWeight: '700' }}>Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {phases.map(phase => {
+                            let rowTotal = 0;
+                            return (
+                                <tr key={phase} style={{ borderBottom: '1px solid #2f3336' }}>
+                                    <td style={{ ...styles.td, fontWeight: '600' }}>{phase === 'Unphased' ? <span style={{ color: '#6e767d', fontStyle: 'italic' }}>Unphased</span> : <span style={styles.badge('purple')}>{phase}</span>}</td>
+                                    {groupNames.map(gn => {
+                                        const hrs = phaseMap[phase][gn] || 0;
+                                        rowTotal += hrs;
+                                        return <td key={gn} style={{ ...styles.td, textAlign: 'right' }}>{hrs > 0 ? fmtHrs(hrs) : '-'}</td>;
+                                    })}
+                                    <td style={{ ...styles.td, textAlign: 'right', fontWeight: '600' }}>{fmtHrs(rowTotal)}</td>
+                                </tr>
+                            );
+                        })}
+                        <tr style={{ background: '#161b22', fontWeight: '700' }}>
+                            <td style={{ ...styles.td }}>TOTAL</td>
+                            {groupNames.map(gn => {
+                                let colTotal = 0;
+                                for (const phase of phases) colTotal += phaseMap[phase][gn] || 0;
+                                return <td key={gn} style={{ ...styles.td, textAlign: 'right' }}>{fmtHrs(colTotal)}</td>;
+                            })}
+                            <td style={{ ...styles.td, textAlign: 'right', color: '#1d9bf0' }}>{(() => { let gt = 0; for (const phase of phases) for (const gn of groupNames) gt += phaseMap[phase][gn] || 0; return fmtHrs(gt); })()}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+}
+
+const CATALOG_COLUMNS = [
+    { id: 'manufacturer', label: 'Manufacturer', width: 130 },
+    { id: 'model', label: 'Model', width: 120 },
+    { id: 'partNumber', label: 'Part #', width: 130 },
+    { id: 'description', label: 'Description', width: 220 },
+    { id: 'category', label: 'Category', width: 110 },
+    { id: 'subcategory', label: 'Subcategory', width: 120 },
+    { id: 'unitCost', label: 'Cost', width: 90 },
+    { id: 'laborHrsPerUnit', label: 'Labor', width: 75 },
+    { id: 'uom', label: 'UOM', width: 60 },
+    { id: 'vendor', label: 'Vendor', width: 110 },
+    { id: 'phase', label: 'Phase', width: 90 },
+    { id: 'discontinued', label: 'Disc.', width: 60 },
+    { id: 'actions', label: 'Actions', width: 80, fixed: true },
+];
+
 function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, compactMode }) {
     const [search, setSearch] = useState('');
     const [categoryFilter, setCategoryFilter] = useState('');
@@ -2964,9 +3140,11 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, c
     const [confirmDelete, setConfirmDelete] = useState(null);
     const [sortField, setSortField] = useState('manufacturer');
     const [sortDir, setSortDir] = useState('asc');
-    
+
+    const { columns: catalogCols, startResize: startCatResize } = useFlexibleColumns(CATALOG_COLUMNS);
+
     // Compact styles
-    const thStyle = { ...styles.th, cursor: 'pointer', userSelect: 'none', ...(compactMode ? { padding: '6px 8px', fontSize: '10px' } : {}) };
+    const thStyle = { ...styles.th, ...styles.thResizable, cursor: 'pointer', userSelect: 'none', ...(compactMode ? { padding: '6px 8px', fontSize: '10px' } : {}) };
     const tdStyle = { ...styles.td, ...(compactMode ? { padding: '4px 8px', fontSize: '11px' } : {}) };
     
     // Get unique categories
@@ -2991,8 +3169,13 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, c
         }
         
         items.sort((a, b) => {
-            let aVal = a[sortField] || '';
-            let bVal = b[sortField] || '';
+            let aVal = a[sortField];
+            let bVal = b[sortField];
+            // Handle booleans (discontinued)
+            if (typeof aVal === 'boolean') { aVal = aVal ? 1 : 0; bVal = bVal ? 1 : 0; }
+            // Handle nullish
+            if (aVal == null) aVal = '';
+            if (bVal == null) bVal = '';
             if (typeof aVal === 'string') aVal = aVal.toLowerCase();
             if (typeof bVal === 'string') bVal = bVal.toLowerCase();
             if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
@@ -3076,45 +3259,65 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, c
                     </select>
                 </div>
                 
-                <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+                <div style={{ maxHeight: '60vh', overflowY: 'auto', overflowX: 'auto' }}>
                     <table style={styles.table}>
+                        <colgroup>
+                            {catalogCols.map(col => <col key={col.id} style={{ width: col.width }} />)}
+                        </colgroup>
                         <thead>
                             <tr>
-                                <th style={thStyle} onClick={() => handleSort('manufacturer')}>Manufacturer <SortIcon field="manufacturer" /></th>
-                                <th style={thStyle} onClick={() => handleSort('model')}>Model <SortIcon field="model" /></th>
-                                <th style={thStyle} onClick={() => handleSort('partNumber')}>Part # <SortIcon field="partNumber" /></th>
-                                <th style={thStyle} onClick={() => handleSort('description')}>Description <SortIcon field="description" /></th>
-                                <th style={thStyle} onClick={() => handleSort('category')}>Category <SortIcon field="category" /></th>
-                                <th style={thStyle} onClick={() => handleSort('unitCost')}>Cost <SortIcon field="unitCost" /></th>
-                                <th style={thStyle} onClick={() => handleSort('laborHrsPerUnit')}>Labor <SortIcon field="laborHrsPerUnit" /></th>
-                                <th style={{ ...thStyle, width: '80px', cursor: 'default' }}>Actions</th>
+                                {catalogCols.map((col, colIndex) => (
+                                    <th
+                                        key={col.id}
+                                        style={{ ...thStyle, cursor: col.fixed ? 'default' : 'pointer' }}
+                                        onClick={() => !col.fixed && handleSort(col.id)}
+                                    >
+                                        {col.label} {!col.fixed && <SortIcon field={col.id} />}
+                                        <div
+                                            style={styles.resizeHandle}
+                                            onMouseDown={e => startCatResize(colIndex, e)}
+                                            onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
+                                            onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
+                                        />
+                                    </th>
+                                ))}
                             </tr>
                         </thead>
                         <tbody>
                             {filtered.slice(0, 200).map(item => (
                                 <tr key={item.id} style={{ opacity: item.discontinued ? 0.5 : 1 }}>
-                                    <td style={tdStyle}>{item.manufacturer}</td>
-                                    <td style={tdStyle}><strong>{item.model}</strong></td>
-                                    <td style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px', color: '#8b98a5' }}>{item.partNumber}</td>
-                                    <td style={tdStyle}>
-                                        {item.description}
-                                        {item.discontinued && <span style={{ ...styles.badge('red'), marginLeft: '6px', fontSize: '9px' }}>Discontinued</span>}
-                                    </td>
-                                    <td style={tdStyle}>
-                                        <span style={{ ...styles.badge('blue'), fontSize: compactMode ? '10px' : '12px', padding: compactMode ? '2px 6px' : '3px 10px' }}>{item.category}</span>
-                                    </td>
-                                    <td style={{ ...tdStyle, color: '#00ba7c' }}>{fmtCost(item.unitCost)}</td>
-                                    <td style={tdStyle}>{item.laborHrsPerUnit}h</td>
-                                    <td style={tdStyle}>
-                                        <div style={{ display: 'flex', gap: '4px' }}>
-                                            <button style={{ ...styles.iconButton, color: '#8b98a5' }} onClick={() => setEditItem(item)} title="Edit">
-                                                <Icons.Edit />
-                                            </button>
-                                            <button style={{ ...styles.iconButton, color: '#f87171' }} onClick={() => setConfirmDelete(item)} title="Delete">
-                                                <Icons.Trash />
-                                            </button>
-                                        </div>
-                                    </td>
+                                    {catalogCols.map(col => {
+                                        switch (col.id) {
+                                            case 'manufacturer':
+                                                return <td key={col.id} style={tdStyle}>{item.manufacturer}</td>;
+                                            case 'model':
+                                                return <td key={col.id} style={tdStyle}><strong>{item.model}</strong></td>;
+                                            case 'partNumber':
+                                                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px', color: '#8b98a5' }}>{item.partNumber}</td>;
+                                            case 'description':
+                                                return <td key={col.id} style={tdStyle}>{item.description}</td>;
+                                            case 'category':
+                                                return <td key={col.id} style={tdStyle}><span style={{ ...styles.badge('blue'), fontSize: compactMode ? '10px' : '12px', padding: compactMode ? '2px 6px' : '3px 10px' }}>{item.category}</span></td>;
+                                            case 'subcategory':
+                                                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px', color: '#8b98a5' }}>{item.subcategory || ''}</td>;
+                                            case 'unitCost':
+                                                return <td key={col.id} style={{ ...tdStyle, color: '#00ba7c' }}>{fmtCost(item.unitCost)}</td>;
+                                            case 'laborHrsPerUnit':
+                                                return <td key={col.id} style={tdStyle}>{item.laborHrsPerUnit}h</td>;
+                                            case 'uom':
+                                                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px', color: '#8b98a5' }}>{item.uom || 'EA'}</td>;
+                                            case 'vendor':
+                                                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px' }}>{item.vendor || ''}</td>;
+                                            case 'phase':
+                                                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px' }}>{item.phase ? <span style={styles.badge('purple')}>{item.phase}</span> : ''}</td>;
+                                            case 'discontinued':
+                                                return <td key={col.id} style={{ ...tdStyle, textAlign: 'center' }}>{item.discontinued ? <span style={{ ...styles.badge('red'), fontSize: '9px' }}>Yes</span> : ''}</td>;
+                                            case 'actions':
+                                                return <td key={col.id} style={tdStyle}><div style={{ display: 'flex', gap: '4px' }}><button style={{ ...styles.iconButton, color: '#8b98a5' }} onClick={() => setEditItem(item)} title="Edit"><Icons.Edit /></button><button style={{ ...styles.iconButton, color: '#f87171' }} onClick={() => setConfirmDelete(item)} title="Delete"><Icons.Trash /></button></div></td>;
+                                            default:
+                                                return <td key={col.id} style={tdStyle}></td>;
+                                        }
+                                    })}
                                 </tr>
                             ))}
                         </tbody>
@@ -5042,6 +5245,23 @@ function App() {
     const [addAccessoryItemIdx, setAddAccessoryItemIdx] = useState(null);
     const [addAccessoryLocationId, setAddAccessoryLocationId] = useState(null); // For all-locations view
     
+    // BOM table resizable columns
+    const { columns: bomCols, startResize: startBomResize } = useFlexibleColumns([
+        { id: 'qty', label: 'Qty', width: 60 },
+        { id: 'manufacturer', label: 'Manufacturer', width: 120 },
+        { id: 'model', label: 'Model', width: 120 },
+        { id: 'partNumber', label: 'Part Number', width: 130 },
+        { id: 'description', label: 'Description', width: 220 },
+        { id: 'unitCost', label: 'Unit Cost', width: 90 },
+        { id: 'laborHrsPerUnit', label: 'Unit Labor', width: 90 },
+        { id: 'extCost', label: 'Ext. Cost', width: 90 },
+        { id: 'extLabor', label: 'Ext. Labor', width: 90 },
+    ]);
+
+    // Report state
+    const [showLaborByPhase, setShowLaborByPhase] = useState(false);
+    const [reportHierarchyDepth, setReportHierarchyDepth] = useState(-1);
+
     // History for undo/redo
     const [history, setHistory] = useState([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
@@ -5412,35 +5632,47 @@ function App() {
             return;
         }
 
-        const locationsWithItems = getLocationsWithItems(project.locations);
-
-        if (locationsWithItems.length === 0) {
-            showToast('No locations with components to export');
-            return;
-        }
-
         const sanitizeFilename = (str) => {
             return str.replace(/[<>:"/\\|?*]/g, '-').replace(/\s*>\s*/g, ' - ').trim();
         };
 
-        locationsWithItems.forEach((location, index) => {
-            setTimeout(() => {
-                const wb = generateEsticomWorkbook(location, packages, project.packages);
-                const filename = sanitizeFilename(location.path || location.name) + '.xlsx';
-                XLSX.writeFile(wb, filename);
-            }, index * 150);
-        });
-
-        showToast(`Exporting ${locationsWithItems.length} Esticom file${locationsWithItems.length > 1 ? 's' : ''}...`);
+        if (reportHierarchyDepth !== -1) {
+            // Grouped export: one file per hierarchy group with merged items
+            const groups = getGroupedByHierarchy(project.locations, reportHierarchyDepth, packages, project.packages || []);
+            if (groups.length === 0) { showToast('No locations with components to export'); return; }
+            groups.forEach((group, index) => {
+                setTimeout(() => {
+                    // Merge all items from all locations in this group into a virtual location
+                    const mergedItems = [];
+                    for (const loc of group.locations) {
+                        const flat = getFlattenedItems(loc, packages, project.packages || []);
+                        mergedItems.push(...flat);
+                    }
+                    const virtualLocation = { name: group.name, items: mergedItems };
+                    const wb = generateEsticomWorkbook(virtualLocation, packages, project.packages);
+                    const filename = sanitizeFilename(group.name) + '.xlsx';
+                    XLSX.writeFile(wb, filename);
+                }, index * 150);
+            });
+            showToast(`Exporting ${groups.length} Esticom file${groups.length > 1 ? 's' : ''} (grouped)...`);
+        } else {
+            // Default: per leaf location
+            const locationsWithItems = getLocationsWithItems(project.locations);
+            if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
+            locationsWithItems.forEach((location, index) => {
+                setTimeout(() => {
+                    const wb = generateEsticomWorkbook(location, packages, project.packages);
+                    const filename = sanitizeFilename(location.path || location.name) + '.xlsx';
+                    XLSX.writeFile(wb, filename);
+                }, index * 150);
+            });
+            showToast(`Exporting ${locationsWithItems.length} Esticom file${locationsWithItems.length > 1 ? 's' : ''}...`);
+        }
     };
 
-    const exportConsolidatedBOM = () => {
-        const XLSX = window.XLSX;
-        if (!XLSX) { showToast('Export library not loaded. Check your internet connection.'); return; }
-        const locationsWithItems = getLocationsWithItems(project.locations);
-        if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
+    const buildConsolidatedBOMSheet = (locsList) => {
         const partMap = {};
-        for (const location of locationsWithItems) {
+        for (const location of locsList) {
             const flatItems = getFlattenedItems(location, packages, project.packages);
             for (const item of flatItems) {
                 const key = item.partNumber || (item.manufacturer + '|' + item.model);
@@ -5455,16 +5687,45 @@ function App() {
                 }
             }
         }
-        const wb = XLSX.utils.book_new();
-        const data = [[], ['BILL OF MATERIALS (Import Template)', '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
-        for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
-        const ws = XLSX.utils.aoa_to_sheet(data);
-        ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
-        ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
-        XLSX.utils.book_append_sheet(wb, ws, 'Bill of materials');
+        return partMap;
+    };
+
+    const exportConsolidatedBOM = () => {
+        const XLSX = window.XLSX;
+        if (!XLSX) { showToast('Export library not loaded. Check your internet connection.'); return; }
         const projectName = (project.name || 'Project').replace(/[<>:"/\\|?*]/g, '-').trim();
-        XLSX.writeFile(wb, projectName + ' - Consolidated BOM.xlsx');
-        showToast('Consolidated BOM exported');
+
+        if (reportHierarchyDepth !== -1) {
+            // Export per-group consolidated BOMs
+            const groups = getGroupedByHierarchy(project.locations, reportHierarchyDepth, packages, project.packages || []);
+            if (groups.length === 0) { showToast('No locations with components to export'); return; }
+            const wb = XLSX.utils.book_new();
+            for (const group of groups) {
+                const partMap = buildConsolidatedBOMSheet(group.locations);
+                const data = [[], ['BILL OF MATERIALS - ' + group.name, '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
+                for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
+                const ws = XLSX.utils.aoa_to_sheet(data);
+                ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
+                ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
+                const sheetName = group.name.substring(0, 31).replace(/[\\/*?[\]:]/g, '-');
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+            }
+            XLSX.writeFile(wb, projectName + ' - Consolidated BOM (Grouped).xlsx');
+            showToast(`Consolidated BOM exported with ${groups.length} groups`);
+        } else {
+            const locationsWithItems = getLocationsWithItems(project.locations);
+            if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
+            const partMap = buildConsolidatedBOMSheet(locationsWithItems);
+            const wb = XLSX.utils.book_new();
+            const data = [[], ['BILL OF MATERIALS (Import Template)', '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
+            for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
+            const ws = XLSX.utils.aoa_to_sheet(data);
+            ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
+            ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
+            XLSX.utils.book_append_sheet(wb, ws, 'Bill of materials');
+            XLSX.writeFile(wb, projectName + ' - Consolidated BOM.xlsx');
+            showToast('Consolidated BOM exported');
+        }
     };
 
     // Build consolidated BOM data for the in-app view
@@ -6502,12 +6763,26 @@ function App() {
                 {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={project.packages || []} onUpdateCatalogPackages={setPackages} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={project.locations || []} onSyncInstances={syncPackageInstances} /></section>}
                 {tab === 'reports' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
-                        <h2 style={{ margin: '0 0 24px 0', fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Download /> Reports & Exports</h2>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                            <h2 style={{ margin: 0, fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Download /> Reports & Exports</h2>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <label style={{ fontSize: '12px', color: '#8b98a5', whiteSpace: 'nowrap' }}>Report Grouping:</label>
+                                <select
+                                    value={reportHierarchyDepth}
+                                    onChange={e => setReportHierarchyDepth(parseInt(e.target.value))}
+                                    style={{ ...styles.input, width: 'auto', minWidth: '180px', padding: '6px 10px', fontSize: '12px', cursor: 'pointer' }}
+                                >
+                                    {getHierarchyLevels(project.locations).map(level => (
+                                        <option key={level.depth} value={level.depth}>{level.label}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
                         <div style={{ display: 'grid', gap: '16px', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', marginBottom: '24px' }}>
                             {/* Export to Esticom */}
                             <div style={styles.card}>
                                 <div style={styles.cardTitle}>Export to Esticom</div>
-                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Export each location as an Esticom-compatible .xlsx BOM file.</p>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Export BOM files grouped by {reportHierarchyDepth === -1 ? 'leaf location' : 'hierarchy level'}.</p>
                                 <button style={styles.button('primary')} onClick={exportToEsticom}><Icons.Download /> Export</button>
                             </div>
                             {/* Consolidated BOM Export */}
@@ -6516,11 +6791,11 @@ function App() {
                                 <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Single BOM with all components across locations.</p>
                                 <button style={styles.button('primary')} onClick={exportConsolidatedBOM}><Icons.Download /> Export</button>
                             </div>
-                            {/* Project Summary - Coming Soon */}
-                            <div style={{ ...styles.card, opacity: 0.5 }}>
-                                <div style={styles.cardTitle}>Project Summary</div>
-                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Cost and labor summary by location.</p>
-                                <button style={{ ...styles.button('primary'), cursor: 'not-allowed' }} disabled><Icons.Download /> Coming Soon</button>
+                            {/* Labor by Phase */}
+                            <div style={styles.card}>
+                                <div style={styles.cardTitle}>Labor by Phase</div>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Labor hours breakdown by phase per location/group.</p>
+                                <button style={styles.button('primary')} onClick={() => setShowLaborByPhase(!showLaborByPhase)}>{showLaborByPhase ? 'Hide' : 'Show'} Report</button>
                             </div>
                         </div>
 
@@ -6539,18 +6814,23 @@ function App() {
                                     </h3>
                                     <p style={{ color: '#8b98a5', fontSize: '13px', margin: '0 0 12px 0' }}>Edit Unit Cost or Unit Labor below to update all matching items across all locations.</p>
                                     <div style={{ overflowX: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                        <table style={{ ...styles.table, fontSize: '13px' }}>
+                                            <colgroup>
+                                                {bomCols.map(col => <col key={col.id} style={{ width: col.width }} />)}
+                                            </colgroup>
                                             <thead>
                                                 <tr style={{ background: '#161b22' }}>
-                                                    <th style={{ ...styles.th, width: '60px' }}>Qty</th>
-                                                    <th style={styles.th}>Manufacturer</th>
-                                                    <th style={styles.th}>Model</th>
-                                                    <th style={styles.th}>Part Number</th>
-                                                    <th style={{ ...styles.th, minWidth: '200px' }}>Description</th>
-                                                    <th style={{ ...styles.th, width: '90px' }}>Unit Cost</th>
-                                                    <th style={{ ...styles.th, width: '90px' }}>Unit Labor</th>
-                                                    <th style={{ ...styles.th, width: '90px' }}>Ext. Cost</th>
-                                                    <th style={{ ...styles.th, width: '90px' }}>Ext. Labor</th>
+                                                    {bomCols.map((col, colIndex) => (
+                                                        <th key={col.id} style={{ ...styles.th, ...styles.thResizable }}>
+                                                            {col.label}
+                                                            <div
+                                                                style={styles.resizeHandle}
+                                                                onMouseDown={e => startBomResize(colIndex, e)}
+                                                                onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
+                                                                onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
+                                                            />
+                                                        </th>
+                                                    ))}
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -6560,28 +6840,29 @@ function App() {
                                                     return (
                                                         <React.Fragment key={b.key}>
                                                             {showCategory && (
-                                                                <tr><td colSpan={9} style={{ padding: '8px 12px', background: '#1a1f26', fontWeight: '700', fontSize: '12px', color: '#8b98a5', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '1px solid #2f3336' }}>{b.category || 'Uncategorized'}</td></tr>
+                                                                <tr><td colSpan={bomCols.length} style={{ padding: '8px 12px', background: '#1a1f26', fontWeight: '700', fontSize: '12px', color: '#8b98a5', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '1px solid #2f3336' }}>{b.category || 'Uncategorized'}</td></tr>
                                                             )}
                                                             <tr style={{ borderBottom: '1px solid #2f3336' }} title={b.locations.join(', ')}>
-                                                                <td style={styles.td}>{fmtQty(b.totalQty)}</td>
-                                                                <td style={styles.td}>{b.manufacturer}</td>
-                                                                <td style={{ ...styles.td, fontWeight: '600' }}>{b.model}</td>
-                                                                <td style={{ ...styles.td, fontSize: '12px', color: '#8b98a5' }}>{b.partNumber}</td>
-                                                                <td style={styles.td}>{b.description}</td>
-                                                                <td style={styles.td}>
-                                                                    <input type="number" step="0.01" min="0" value={b.unitCost} onChange={e => updateConsolidatedField(b.key, 'unitCost', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} />
-                                                                </td>
-                                                                <td style={styles.td}>
-                                                                    <input type="number" step="0.01" min="0" value={b.laborHrsPerUnit} onChange={e => updateConsolidatedField(b.key, 'laborHrsPerUnit', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} />
-                                                                </td>
-                                                                <td style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(b.totalQty * b.unitCost)}</td>
-                                                                <td style={styles.td}>{fmtHrs(b.totalQty * b.laborHrsPerUnit)}</td>
+                                                                {bomCols.map(col => {
+                                                                    switch (col.id) {
+                                                                        case 'qty': return <td key={col.id} style={styles.td}>{fmtQty(b.totalQty)}</td>;
+                                                                        case 'manufacturer': return <td key={col.id} style={styles.td}>{b.manufacturer}</td>;
+                                                                        case 'model': return <td key={col.id} style={{ ...styles.td, fontWeight: '600' }}>{b.model}</td>;
+                                                                        case 'partNumber': return <td key={col.id} style={{ ...styles.td, fontSize: '12px', color: '#8b98a5' }}>{b.partNumber}</td>;
+                                                                        case 'description': return <td key={col.id} style={styles.td}>{b.description}</td>;
+                                                                        case 'unitCost': return <td key={col.id} style={styles.td}><input type="number" step="0.01" min="0" value={b.unitCost} onChange={e => updateConsolidatedField(b.key, 'unitCost', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} /></td>;
+                                                                        case 'laborHrsPerUnit': return <td key={col.id} style={styles.td}><input type="number" step="0.01" min="0" value={b.laborHrsPerUnit} onChange={e => updateConsolidatedField(b.key, 'laborHrsPerUnit', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} /></td>;
+                                                                        case 'extCost': return <td key={col.id} style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(b.totalQty * b.unitCost)}</td>;
+                                                                        case 'extLabor': return <td key={col.id} style={styles.td}>{fmtHrs(b.totalQty * b.laborHrsPerUnit)}</td>;
+                                                                        default: return <td key={col.id} style={styles.td}></td>;
+                                                                    }
+                                                                })}
                                                             </tr>
                                                         </React.Fragment>
                                                     );
                                                 })}
                                                 <tr style={{ background: '#161b22', fontWeight: '700' }}>
-                                                    <td colSpan={7} style={{ ...styles.td, textAlign: 'right' }}>TOTALS</td>
+                                                    <td colSpan={bomCols.length - 2} style={{ ...styles.td, textAlign: 'right' }}>TOTALS</td>
                                                     <td style={{ ...styles.td, color: '#00ba7c' }}>{fmtCost(totalCost)}</td>
                                                     <td style={styles.td}>{fmtHrs(totalLabor)}</td>
                                                 </tr>
@@ -6591,6 +6872,18 @@ function App() {
                                 </div>
                             );
                         })()}
+
+                        {/* Labor by Phase Report */}
+                        {showLaborByPhase && (
+                            <div style={{ marginTop: '24px' }}>
+                                <LaborByPhaseReport
+                                    locations={project.locations}
+                                    catalogPkgs={packages}
+                                    projectPkgs={project.packages || []}
+                                    hierarchyGroups={reportHierarchyDepth === -1 ? null : getGroupedByHierarchy(project.locations, reportHierarchyDepth, packages, project.packages || [])}
+                                />
+                            </div>
+                        )}
                     </section>
                 )}
             </main>
