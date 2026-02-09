@@ -1031,6 +1031,7 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
         };
         return {
             count: items.length,
+            items: items.sort((a, b) => a.unitCost - b.unitCost),
             low: { cost: percentile(costs, 0.25), labor: percentile(labors, 0.25) },
             mid: { cost: percentile(costs, 0.5), labor: percentile(labors, 0.5) },
             high: { cost: percentile(costs, 0.75), labor: percentile(labors, 0.75) },
@@ -1038,6 +1039,8 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
             max: costs[costs.length - 1],
         };
     }, [catalog, phCategory, phSubcategory]);
+
+    const [showPhItems, setShowPhItems] = useState(false);
     
     // Get unique values for dropdowns
     const categories = useMemo(() => [...new Set(catalog.map(c => c.category))].sort(), [catalog]);
@@ -1355,6 +1358,37 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
                                         </div>
                                     ))}
                                 </div>
+                                <button
+                                    style={{ ...styles.smallButton, marginTop: '12px', color: '#8b98a5', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                    onClick={() => setShowPhItems(!showPhItems)}
+                                >
+                                    {showPhItems ? <Icons.ChevronUp /> : <Icons.ChevronDown />}
+                                    {showPhItems ? 'Hide' : 'Show'} {phStats.count} catalog items
+                                </button>
+                                {showPhItems && (
+                                    <div style={{ maxHeight: '180px', overflowY: 'auto', marginTop: '8px', borderRadius: '8px', border: '1px solid #2f3336' }}>
+                                        <table style={{ ...styles.table, fontSize: '12px' }}>
+                                            <thead>
+                                                <tr>
+                                                    <th style={{ ...styles.th, padding: '6px 10px', fontSize: '11px' }}>Manufacturer</th>
+                                                    <th style={{ ...styles.th, padding: '6px 10px', fontSize: '11px' }}>Model</th>
+                                                    <th style={{ ...styles.th, padding: '6px 10px', fontSize: '11px', textAlign: 'right' }}>Cost</th>
+                                                    <th style={{ ...styles.th, padding: '6px 10px', fontSize: '11px', textAlign: 'right' }}>Labor</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {phStats.items.map(item => (
+                                                    <tr key={item.id}>
+                                                        <td style={{ ...styles.td, padding: '4px 10px' }}>{item.manufacturer}</td>
+                                                        <td style={{ ...styles.td, padding: '4px 10px', color: '#1d9bf0' }}>{item.model}</td>
+                                                        <td style={{ ...styles.td, padding: '4px 10px', textAlign: 'right', color: '#00ba7c' }}>{fmtCost(item.unitCost)}</td>
+                                                        <td style={{ ...styles.td, padding: '4px 10px', textAlign: 'right' }}>{item.laborHrsPerUnit}h</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
                             </>
                         ) : phCategory ? (
                             <div style={{ padding: '30px 20px', textAlign: 'center', color: '#6e767d' }}>No items with cost data found in this {phSubcategory ? 'subcategory' : 'category'}</div>
