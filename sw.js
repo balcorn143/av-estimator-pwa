@@ -34,7 +34,7 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
   // Pass through Supabase API and CDN requests without caching
-  if (url.hostname.includes('supabase.co') || url.hostname.includes('unpkg.com')) {
+  if (url.hostname.includes('supabase.co') || url.hostname.includes('unpkg.com') || url.hostname.includes('jsdelivr.net')) {
     event.respondWith(fetch(event.request));
     return;
   }
