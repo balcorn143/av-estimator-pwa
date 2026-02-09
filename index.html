@@ -252,26 +252,35 @@ function parseLocationInput(text) {
     return results;
 }
 
-function calculateTotals(location) {
+function calculateTotals(location, catalogPkgs, projectPkgs) {
     let cost = 0, labor = 0, itemCount = 0;
     if (location.items) {
         for (const item of location.items) {
-            cost += (item.qty || 0) * (item.unitCost || 0);
-            labor += (item.qty || 0) * (item.laborHrsPerUnit || 0);
-            itemCount += 1;
-            // Include accessories in totals
-            if (item.accessories) {
-                for (const acc of item.accessories) {
-                    cost += (acc.qty || 0) * (acc.unitCost || 0);
-                    labor += (acc.qty || 0) * (acc.laborHrsPerUnit || 0);
-                    itemCount += 1; // Count each accessory as a line item
+            if (item.type === 'package') {
+                const resolved = resolvePackageInstance(item, catalogPkgs, projectPkgs);
+                if (resolved && !resolved.isMissing) {
+                    cost += resolved.totalCost;
+                    labor += resolved.totalLabor;
+                    itemCount += resolved.expandedItems.length;
+                }
+            } else {
+                cost += (item.qty || 0) * (item.unitCost || 0);
+                labor += (item.qty || 0) * (item.laborHrsPerUnit || 0);
+                itemCount += 1;
+                // Include accessories in totals
+                if (item.accessories) {
+                    for (const acc of item.accessories) {
+                        cost += (acc.qty || 0) * (acc.unitCost || 0);
+                        labor += (acc.qty || 0) * (acc.laborHrsPerUnit || 0);
+                        itemCount += 1;
+                    }
                 }
             }
         }
     }
     if (location.children) {
         for (const child of location.children) {
-            const t = calculateTotals(child);
+            const t = calculateTotals(child, catalogPkgs, projectPkgs);
             cost += t.cost; labor += t.labor; itemCount += t.itemCount;
         }
     }
@@ -292,6 +301,179 @@ function fmtCost(amount) {
 function fmtQty(n) { return Number(n || 0).toLocaleString('en-US'); }
 function fmtHrs(hours) {
     return Number(hours || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + 'h';
+}
+
+// ============================================================================
+// PACKAGE UTILITIES
+// ============================================================================
+
+// Resolve a package instance to its expanded items using catalog/project package definitions
+function resolvePackageInstance(instance, catalogPkgs, projectPkgs) {
+    if (!instance || instance.type !== 'package') return null;
+    const allPkgs = [...(projectPkgs || []), ...(catalogPkgs || [])];
+    const def = allPkgs.find(p => p.id === instance.packageId);
+    if (!def) return { definition: null, isOutOfDate: false, isMissing: true, expandedItems: [], totalCost: 0, totalLabor: 0 };
+
+    const multiplier = instance.qty || 1;
+    const expandedItems = (def.items || []).map(item => ({
+        ...item,
+        qty: (item.qtyPerPackage || item.qty || 1) * multiplier,
+    }));
+
+    let totalCost = 0, totalLabor = 0;
+    expandedItems.forEach(item => {
+        totalCost += (item.qty || 0) * (item.unitCost || 0);
+        totalLabor += (item.qty || 0) * (item.laborHrsPerUnit || 0);
+        if (item.accessories) {
+            item.accessories.forEach(acc => {
+                const accQty = (acc.qtyPer || acc.qty || 0) * multiplier;
+                totalCost += accQty * (acc.unitCost || 0);
+                totalLabor += accQty * (acc.laborHrsPerUnit || 0);
+            });
+        }
+    });
+
+    return {
+        definition: def,
+        isOutOfDate: (def.version || 1) > (instance.packageVersion || 1),
+        isMissing: false,
+        expandedItems,
+        totalCost,
+        totalLabor,
+    };
+}
+
+// Flatten a location's items, expanding package instances into individual items (for exports/BOM)
+function getFlattenedItems(location, catalogPkgs, projectPkgs) {
+    const result = [];
+    for (const item of (location.items || [])) {
+        if (item.type === 'package') {
+            const resolved = resolvePackageInstance(item, catalogPkgs, projectPkgs);
+            if (resolved && !resolved.isMissing) {
+                resolved.expandedItems.forEach(ei => {
+                    // Push expanded item with accessories intact (qty already multiplied by resolvePackageInstance)
+                    // Accessories also need qty multiplied by package qty
+                    const multiplier = item.qty || 1;
+                    const expandedAccessories = ei.accessories ? ei.accessories.map(acc => ({
+                        ...acc,
+                        qty: (acc.qtyPer || acc.qty || 0) * multiplier,
+                    })) : undefined;
+                    result.push({ ...ei, accessories: expandedAccessories });
+                });
+            }
+        } else {
+            result.push(item);
+        }
+    }
+    return result;
+}
+
+// Find all instances of a package across all locations (recursive)
+function findAllPackageInstances(locations, packageId) {
+    const results = [];
+    const search = (locs, path) => {
+        for (const loc of (locs || [])) {
+            (loc.items || []).forEach((item, idx) => {
+                if (item.type === 'package' && item.packageId === packageId) {
+                    results.push({ locationId: loc.id, locationName: loc.name, path: [...path, loc.name], itemIdx: idx, instance: item });
+                }
+            });
+            if (loc.children) search(loc.children, [...path, loc.name]);
+        }
+    };
+    search(locations, []);
+    return results;
+}
+
+// Generate a unique package ID
+function generatePackageId() {
+    return 'pkg-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+}
+
+// Migrate old-style packageName items to new package instance model
+function migrateProjectPackages(project, existingPackages) {
+    if (project.packageMigrationVersion >= 1) return { project, newPackageDefs: [] };
+
+    const newPackageDefs = [];
+    let changed = false;
+
+    const migrateLoc = (loc) => {
+        if (!loc.items || loc.items.length === 0) return loc;
+
+        const packageGroups = {};
+        const otherItems = [];
+
+        loc.items.forEach(item => {
+            if (item.type === 'package') {
+                otherItems.push(item); // Already migrated
+            } else if (item.packageName) {
+                if (!packageGroups[item.packageName]) packageGroups[item.packageName] = [];
+                packageGroups[item.packageName].push(item);
+                changed = true;
+            } else {
+                otherItems.push(item);
+            }
+        });
+
+        // Convert each package group to a package instance
+        const newItems = [...otherItems];
+        Object.entries(packageGroups).forEach(([name, items]) => {
+            // Try to find existing package definition
+            let def = [...existingPackages, ...newPackageDefs].find(p => p.name === name);
+            if (!def) {
+                def = {
+                    id: generatePackageId(),
+                    name,
+                    scope: 'catalog',
+                    version: 1,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    items: items.map(i => {
+                        const { packageName: _, ...rest } = i;
+                        return { ...rest, qtyPerPackage: i.qty || 1 };
+                    }),
+                };
+                newPackageDefs.push(def);
+            }
+            newItems.push({
+                type: 'package',
+                packageId: def.id,
+                packageName: name,
+                packageVersion: def.version || 1,
+                qty: 1,
+                notes: '',
+            });
+        });
+
+        return {
+            ...loc,
+            items: newItems,
+            children: loc.children ? loc.children.map(migrateLoc) : loc.children,
+        };
+    };
+
+    const migratedLocations = (project.locations || []).map(migrateLoc);
+
+    return {
+        project: changed ? { ...project, locations: migratedLocations, packageMigrationVersion: 1 } : { ...project, packageMigrationVersion: 1 },
+        newPackageDefs,
+    };
+}
+
+// Migrate existing package definitions to add new fields (scope, version, qtyPerPackage)
+function migratePackageDefinitions(packages) {
+    return (packages || []).map(pkg => ({
+        ...pkg,
+        id: pkg.id || generatePackageId(),
+        scope: pkg.scope || 'catalog',
+        version: pkg.version || 1,
+        createdAt: pkg.createdAt || new Date().toISOString(),
+        updatedAt: pkg.updatedAt || new Date().toISOString(),
+        items: (pkg.items || []).map(item => ({
+            ...item,
+            qtyPerPackage: item.qtyPerPackage || item.qty || 1,
+        })),
+    }));
 }
 
 // Get the path to a location (returns array of ancestor names, not including the location itself)
@@ -385,13 +567,16 @@ function filterLocations(locations, searchTerm) {
 }
 
 // Generate Esticom-compatible BoM workbook for a single location
-function generateEsticomWorkbook(location) {
+function generateEsticomWorkbook(location, catalogPkgs, projectPkgs) {
     const XLSX = window.XLSX;
     const wb = XLSX.utils.book_new();
 
+    // Use getFlattenedItems to expand package instances into individual items
+    const flatItems = getFlattenedItems(location, catalogPkgs, projectPkgs);
+
     // Consolidate all items + accessories into unique part numbers
     const partMap = {};
-    for (const item of (location.items || [])) {
+    for (const item of flatItems) {
         const key = item.partNumber || (item.manufacturer + '|' + item.model);
         if (partMap[key]) {
             partMap[key].qty += (item.qty || 0);
@@ -471,7 +656,7 @@ function generateEsticomWorkbook(location) {
     return wb;
 }
 
-function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onDuplicate, onMoveUp, onMoveDown, onPromote, onDemote, multiSelect, onMultiSelectToggle, depth = 0, searchTerm, expandedState, onToggleExpand }) {
+function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onDuplicate, onMoveUp, onMoveDown, onPromote, onDemote, multiSelect, onMultiSelectToggle, depth = 0, searchTerm, expandedState, onToggleExpand, catalogPkgs, projectPkgs }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [hoveredId, setHoveredId] = useState(null);
     const [editingId, setEditingId] = useState(null);
@@ -531,7 +716,7 @@ function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onD
                 const exp = expandedState[loc.id];
                 const sel = selectedId === loc.id;
                 const isMultiSelected = multiSelect.some(l => l.id === loc.id);
-                const totals = calculateTotals(loc);
+                const totals = calculateTotals(loc, catalogPkgs, projectPkgs);
                 const nameMatch = searchTerm && loc.name.toLowerCase().includes(searchTerm.toLowerCase());
                 const isHovered = hoveredId === loc.id;
                 const highlighted = sel || isMultiSelected;
@@ -587,7 +772,7 @@ function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onD
                                 </button>
                             )}
                         </div>
-                        {has && exp && <LocationTree locations={loc.children} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onRename={onRename} onDuplicate={onDuplicate} onMoveUp={onMoveUp} onMoveDown={onMoveDown} onPromote={onPromote} onDemote={onDemote} multiSelect={multiSelect} onMultiSelectToggle={onMultiSelectToggle} depth={depth + 1} searchTerm={searchTerm} expandedState={expandedState} onToggleExpand={onToggleExpand} />}
+                        {has && exp && <LocationTree locations={loc.children} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onRename={onRename} onDuplicate={onDuplicate} onMoveUp={onMoveUp} onMoveDown={onMoveDown} onPromote={onPromote} onDemote={onDemote} multiSelect={multiSelect} onMultiSelectToggle={onMultiSelectToggle} depth={depth + 1} searchTerm={searchTerm} expandedState={expandedState} onToggleExpand={onToggleExpand} catalogPkgs={catalogPkgs} projectPkgs={projectPkgs} />}
                     </div>
                 );
             })}
@@ -748,7 +933,7 @@ function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onD
     );
 }
 
-function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
+function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, onInsertPkg }) {
     const [search, setSearch] = useState('');
     const [selected, setSelected] = useState([]);
     const [qty, setQty] = useState(1);
@@ -797,7 +982,11 @@ function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
         return filtered.slice(0, 50);
     }, [catalog, search, filterCategory, filterSubcategory, filterManufacturer]);
     
-    const pkgResults = search.length >= 2 ? packages.filter(p => p.name.toLowerCase().includes(search.toLowerCase())) : packages;
+    const allPkgs = useMemo(() => [
+        ...(packages || []).map(p => ({ ...p, _scope: 'catalog' })),
+        ...(projectPackages || []).map(p => ({ ...p, _scope: 'project' })),
+    ], [packages, projectPackages]);
+    const pkgResults = search.length >= 2 ? allPkgs.filter(p => p.name.toLowerCase().includes(search.toLowerCase())) : allPkgs;
     
     const toggle = (item, e) => { 
         if (e.ctrlKey || e.metaKey) {
@@ -983,19 +1172,30 @@ function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
                     <div style={{ ...styles.searchResults, maxHeight: '350px' }}>
                         {pkgResults.length > 0 ? pkgResults.map(pkg => {
                             const c = styles.pkgColor(pkg.name);
-                            const cost = pkg.items?.reduce((s, i) => s + (i.qty * (i.unitCost || 0)), 0) || 0;
+                            const cost = (pkg.items || []).reduce((s, i) => s + ((i.qtyPerPackage || i.qty || 1) * (i.unitCost || 0)), 0);
                             return (
-                                <div key={pkg.id} 
-                                    style={{ ...styles.searchItem(false), backgroundColor: c.bg, borderLeft: `3px solid ${c.b}` }} 
+                                <div key={pkg.id}
+                                    style={{ ...styles.searchItem(false), backgroundColor: c.bg, borderLeft: `3px solid ${c.b}` }}
                                     onClick={() => { onInsertPkg(pkg, qty); onClose(); }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                             <Icons.Package />
                                             <span style={{ fontWeight: '600' }}>{pkg.name}</span>
-                                            <span style={styles.badge('green')}>{pkg.items?.length || 0} items</span>
+                                            <span style={styles.badge(pkg._scope === 'catalog' ? 'blue' : 'green')}>{pkg._scope === 'catalog' ? 'Catalog' : 'Project'}</span>
+                                            <span style={styles.badge('green')}>{(pkg.items || []).length} items</span>
                                         </div>
                                         <div style={{ fontWeight: '600', color: '#00ba7c' }}>{fmtCost(cost)}</div>
                                     </div>
+                                    {(pkg.items || []).length > 0 && (
+                                        <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #2f333640' }}>
+                                            {pkg.items.slice(0, 4).map((item, i) => (
+                                                <div key={i} style={{ fontSize: '12px', color: '#8b98a5', paddingLeft: '12px' }}>
+                                                    └ {item.qtyPerPackage || item.qty || 1}x {item.manufacturer} {item.model}
+                                                </div>
+                                            ))}
+                                            {pkg.items.length > 4 && <div style={{ fontSize: '11px', color: '#6e767d', paddingLeft: '12px' }}>+ {pkg.items.length - 4} more</div>}
+                                        </div>
+                                    )}
                                 </div>
                             );
                         }) : (
@@ -1232,11 +1432,11 @@ function DuplicateModal({ location, onClose, onDuplicate }) {
     );
 }
 
-function DeleteConfirmModal({ locations, onClose, onDelete }) {
+function DeleteConfirmModal({ locations, onClose, onDelete, catalogPkgs, projectPkgs }) {
     // Support both single location and array of locations
     const locArray = Array.isArray(locations) ? locations : [locations];
     const totalStats = locArray.reduce((acc, loc) => {
-        const t = calculateTotals(loc);
+        const t = calculateTotals(loc, catalogPkgs, projectPkgs);
         return { 
             cost: acc.cost + t.cost, 
             labor: acc.labor + t.labor, 
@@ -1667,7 +1867,7 @@ function useFlexibleColumns(initialColumns) {
     return { columns, startResize, startDrag, onDragOver, onDragLeave, onDrop, onDragEnd, dragOverIndex };
 }
 
-function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog }) {
+function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs }) {
     const [selectedItems, setSelectedItems] = useState([]);
     const [expandedItems, setExpandedItems] = useState({}); // Track which items are expanded (by index)
     const [expandedPackages, setExpandedPackages] = useState({}); // Track which packages are expanded
@@ -1803,45 +2003,66 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
     // Group items by package
     const groupedItems = useMemo(() => {
         const items = location.items || [];
-        const packages = {};
+        const packageInstances = [];
+        const legacyPackages = {};
         const standalone = [];
-        
+
         items.forEach((item, idx) => {
-            if (item.packageName) {
-                if (!packages[item.packageName]) {
-                    packages[item.packageName] = { name: item.packageName, items: [], indices: [] };
+            if (item.type === 'package') {
+                const resolved = resolvePackageInstance(item, catalogPkgs, projectPkgs);
+                packageInstances.push({
+                    instance: item,
+                    idx,
+                    resolved,
+                    name: item.packageName,
+                    qty: item.qty || 1,
+                    isOutOfDate: resolved?.isOutOfDate || false,
+                    isMissing: resolved?.isMissing || false,
+                    cost: resolved?.totalCost || 0,
+                    labor: resolved?.totalLabor || 0,
+                    itemCount: resolved?.expandedItems?.length || 0,
+                    expandedItems: resolved?.expandedItems || [],
+                });
+            } else if (item.packageName) {
+                // Legacy format — backward compat
+                if (!legacyPackages[item.packageName]) {
+                    legacyPackages[item.packageName] = { name: item.packageName, items: [], indices: [] };
                 }
-                packages[item.packageName].items.push(item);
-                packages[item.packageName].indices.push(idx);
+                legacyPackages[item.packageName].items.push(item);
+                legacyPackages[item.packageName].indices.push(idx);
             } else {
                 standalone.push({ item, idx });
             }
         });
-        
-        // Calculate package totals including accessories count
-        Object.values(packages).forEach(pkg => {
+
+        // Calculate legacy package totals
+        Object.values(legacyPackages).forEach(pkg => {
             pkg.cost = pkg.items.reduce((s, item) => s + calculateItemTotal(item).cost, 0);
             pkg.labor = pkg.items.reduce((s, item) => s + calculateItemTotal(item).labor, 0);
             pkg.itemCount = pkg.items.reduce((count, item) => count + 1 + (item.accessories?.length || 0), 0);
         });
-        
-        return { packages: Object.values(packages), standalone };
-    }, [location.items]);
+
+        return { packages: packageInstances, legacyPackages: Object.values(legacyPackages), standalone };
+    }, [location.items, catalogPkgs, projectPkgs]);
     
-    const totals = calculateTotals(location);
-    // Count line items including accessories
+    const totals = calculateTotals(location, catalogPkgs, projectPkgs);
+    // Count line items including accessories and package contents
     const directItems = (location.items || []).reduce((count, item) => {
+        if (item.type === 'package') {
+            const resolved = resolvePackageInstance(item, catalogPkgs, projectPkgs);
+            return count + (resolved?.expandedItems?.length || 0);
+        }
         return count + 1 + (item.accessories?.length || 0);
     }, 0);
-    
+
     // Calculate direct totals including accessories
-    const directCost = (location.items || []).reduce((s, item) => s + calculateItemTotal(item).cost, 0);
-    const directLabor = (location.items || []).reduce((s, item) => s + calculateItemTotal(item).labor, 0);
+    const directCost = totals.cost - ((location.children || []).reduce((s, c) => s + calculateTotals(c, catalogPkgs, projectPkgs).cost, 0));
+    const directLabor = totals.labor - ((location.children || []).reduce((s, c) => s + calculateTotals(c, catalogPkgs, projectPkgs).labor, 0));
     const subCount = (location.children || []).length;
     
     // Check if any items have accessories or packages
     const hasAnyAccessories = (location.items || []).some(item => item.accessories?.length > 0);
-    const hasAnyPackages = groupedItems.packages.length > 0;
+    const hasAnyPackages = groupedItems.packages.length > 0 || groupedItems.legacyPackages.length > 0;
     const hasExpandableContent = hasAnyAccessories || hasAnyPackages;
     
     // Close context menu on click outside
@@ -1975,23 +2196,21 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
         location.items?.forEach((item, idx) => {
             expandedI[idx] = true;
         });
-        groupedItems.packages.forEach(pkg => {
-            expandedP[pkg.name] = true;
-        });
+        groupedItems.packages.forEach(pkg => { expandedP[pkg.name] = true; });
+        groupedItems.legacyPackages.forEach(pkg => { expandedP[pkg.name] = true; });
         setExpandedItems(expandedI);
         setExpandedPackages(expandedP);
         setAllExpanded(true);
     };
-    
+
     const collapseAll = () => {
         const collapsedI = {};
         const collapsedP = {};
         location.items?.forEach((item, idx) => {
             collapsedI[idx] = false;
         });
-        groupedItems.packages.forEach(pkg => {
-            collapsedP[pkg.name] = false;
-        });
+        groupedItems.packages.forEach(pkg => { collapsedP[pkg.name] = false; });
+        groupedItems.legacyPackages.forEach(pkg => { collapsedP[pkg.name] = false; });
         setExpandedItems(collapsedI);
         setExpandedPackages(collapsedP);
         setAllExpanded(false);
@@ -2052,7 +2271,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                     <div style={styles.cardTitle}><Icons.Layers /> Sublocations ({subCount})</div>
                     <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
                         {location.children.map(child => {
-                            const t = calculateTotals(child);
+                            const t = calculateTotals(child, catalogPkgs, projectPkgs);
                             return (
                                 <div key={child.id} style={{ backgroundColor: '#0f1419', padding: '12px', borderRadius: '8px', border: '1px solid #2f3336' }}>
                                     <div style={{ fontWeight: '600', marginBottom: '4px' }}>{child.name}</div>
@@ -2073,7 +2292,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                     <div style={{ padding: '16px 20px', borderBottom: '1px solid #2f3336', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                         <div style={{ ...styles.cardTitle, marginBottom: 0 }}>
                             <Icons.Package /> Components ({directItems})
-                            {groupedItems.packages.length > 0 && <span style={styles.badge('green')}>{groupedItems.packages.length} packages</span>}
+                            {(groupedItems.packages.length + groupedItems.legacyPackages.length) > 0 && <span style={styles.badge('green')}>{groupedItems.packages.length + groupedItems.legacyPackages.length} packages</span>}
                             {selectedItems.length > 0 && <span style={styles.badge('blue')}>{selectedItems.length} selected</span>}
                         </div>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -2136,59 +2355,105 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                             </thead>
                             <tbody>
                                 {/* Render packages first */}
+                                {/* Package instances (new format) */}
                                 {groupedItems.packages.map(pkg => {
                                     const pkgColor = styles.pkgColor(pkg.name);
                                     const isPkgExpanded = expandedPackages[pkg.name] !== false;
+                                    const isSelected = selectedItems.includes(pkg.idx);
+                                    const togglePkgSelect = () => toggleSelect(pkg.idx);
+
+                                    // Handler to change package instance qty
+                                    const changePkgQty = (val) => {
+                                        const items = [...location.items];
+                                        items[pkg.idx] = { ...items[pkg.idx], qty: Math.max(1, parseInt(val) || 1) };
+                                        onUpdate(location.id, items);
+                                    };
+
+                                    return (
+                                        <React.Fragment key={`pkg-${pkg.idx}`}>
+                                            {/* Package header row */}
+                                            <tr
+                                                style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}`, cursor: 'context-menu' }}
+                                                onContextMenu={e => handleContextMenu(e, pkg.idx, false, null, true, pkg.name)}>
+                                                {columns.map((col, colIndex) => {
+                                                    const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px' };
+                                                    if (col.id === 'checkbox') return <td key={col.id} style={tdS}><input type="checkbox" checked={isSelected} onChange={() => togglePkgSelect()} /></td>;
+                                                    if (col.id === 'expand') return <td key={col.id} style={tdS}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>;
+                                                    if (col.id === 'qty') return <td key={col.id} style={tdS}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, ...compactStyles.input, width: '50px', fontWeight: '700' }} min="1" /></td>;
+                                                    if (col.id === 'manufacturer' || col.id === 'notes') return <td key={col.id} style={{ ...tdS, fontWeight: '700' }} colSpan={col.id === 'notes' ? 1 : undefined}>
+                                                        {col.id === 'notes' ? '' : <><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isOutOfDate && <span style={{ color: '#f59e0b', fontSize: '11px' }} title="Package definition has been updated">⚠ outdated</span>} {pkg.isMissing && <span style={{ color: '#f87171', fontSize: '11px' }}>⚠ missing</span>}</>}
+                                                    </td>;
+                                                    if (col.id === 'model') return <td key={col.id} style={tdS}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items × {pkg.qty}</span></td>;
+                                                    if (col.id === 'description') return <td key={col.id} style={tdS}>{pkg.instance.notes || ''}</td>;
+                                                    if (col.id === 'extCost') return <td key={col.id} style={{ ...tdS, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>;
+                                                    if (col.id === 'extLabor' || col.id === 'labor') return <td key={col.id} style={tdS}>{fmtHrs(pkg.labor)}</td>;
+                                                    return <td key={col.id} style={tdS}></td>;
+                                                })}
+                                            </tr>
+
+                                            {/* Expanded package items (read-only, computed from definition) */}
+                                            {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
+                                                <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}>
+                                                    {columns.map(col => {
+                                                        const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px', color: '#8b98a5', fontSize: '12px' };
+                                                        if (col.id === 'checkbox') return <td key={col.id} style={tdS}></td>;
+                                                        if (col.id === 'expand') return <td key={col.id} style={tdS}></td>;
+                                                        if (col.id === 'qty') return <td key={col.id} style={tdS}>{fmtQty(item.qty)}</td>;
+                                                        if (col.id === 'notes') return <td key={col.id} style={tdS}><span style={{ fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}×{pkg.qty}</span></td>;
+                                                        if (col.id === 'manufacturer') return <td key={col.id} style={tdS}>{item.manufacturer}</td>;
+                                                        if (col.id === 'model') return <td key={col.id} style={{ ...tdS, color: '#1d9bf0' }}>{item.model}</td>;
+                                                        if (col.id === 'description') return <td key={col.id} style={tdS}>{item.description}</td>;
+                                                        if (col.id === 'unitCost') return <td key={col.id} style={tdS}>{fmtCost(item.unitCost || 0)}</td>;
+                                                        if (col.id === 'unitLabor') return <td key={col.id} style={tdS}>{fmtHrs(item.laborHrsPerUnit || 0)}</td>;
+                                                        if (col.id === 'extCost') return <td key={col.id} style={{ ...tdS, color: '#00ba7c' }}>{fmtCost((item.qty || 0) * (item.unitCost || 0))}</td>;
+                                                        if (col.id === 'extLabor' || col.id === 'labor') return <td key={col.id} style={tdS}>{fmtHrs((item.qty || 0) * (item.laborHrsPerUnit || 0))}</td>;
+                                                        return <td key={col.id} style={tdS}></td>;
+                                                    })}
+                                                </tr>
+                                            ))}
+                                        </React.Fragment>
+                                    );
+                                })}
+
+                                {/* Legacy packages (old format, backward compat) */}
+                                {groupedItems.legacyPackages.map(pkg => {
+                                    const pkgColor = styles.pkgColor(pkg.name);
+                                    const isPkgExpanded = expandedPackages[pkg.name] !== false;
                                     const allPkgItemsSelected = pkg.indices.every(idx => selectedItems.includes(idx));
-                                    const somePkgItemsSelected = pkg.indices.some(idx => selectedItems.includes(idx));
-                                    
-                                    const togglePkgSelect = () => {
+
+                                    const toggleLegacyPkgSelect = () => {
                                         if (allPkgItemsSelected) {
                                             setSelectedItems(prev => prev.filter(idx => !pkg.indices.includes(idx)));
                                         } else {
                                             setSelectedItems(prev => [...new Set([...prev, ...pkg.indices])]);
                                         }
                                     };
-                                    
+
                                     return (
-                                        <React.Fragment key={`pkg-${pkg.name}`}>
-                                            {/* Package header row */}
-                                            <tr 
-                                                style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}`, cursor: 'context-menu' }}
-                                                onContextMenu={e => handleContextMenu(e, null, false, null, true, pkg.name)}>
-                                                {columns.map((col, colIndex) => renderPackageHeaderCell(col, colIndex, pkg, { pkgColor, allPkgItemsSelected, somePkgItemsSelected, togglePkgSelect, isPkgExpanded, togglePackageExpand }))}
+                                        <React.Fragment key={`legacy-pkg-${pkg.name}`}>
+                                            <tr style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}` }}>
+                                                {columns.map((col) => {
+                                                    const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px' };
+                                                    if (col.id === 'checkbox') return <td key={col.id} style={tdS}><input type="checkbox" checked={allPkgItemsSelected} onChange={toggleLegacyPkgSelect} /></td>;
+                                                    if (col.id === 'expand') return <td key={col.id} style={tdS}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>;
+                                                    if (col.id === 'manufacturer') return <td key={col.id} style={{ ...tdS, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> <span style={{ fontSize: '10px', color: '#6e767d' }}>(legacy)</span></td>;
+                                                    if (col.id === 'extCost') return <td key={col.id} style={{ ...tdS, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>;
+                                                    if (col.id === 'extLabor' || col.id === 'labor') return <td key={col.id} style={tdS}>{fmtHrs(pkg.labor)}</td>;
+                                                    return <td key={col.id} style={tdS}></td>;
+                                                })}
                                             </tr>
-                                            
-                                            {/* Package items */}
                                             {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => {
                                                 const i = pkg.indices[pkgItemIdx];
-                                                const isSelected = selectedItems.includes(i);
-                                                const hasAccessories = item.accessories?.length > 0;
-                                                const isItemExpanded = expandedItems[i] !== false;
+                                                const isItemSelected = selectedItems.includes(i);
                                                 const itemTotal = calculateItemTotal(item);
-                                                
                                                 return (
-                                                    <React.Fragment key={`pkg-item-${i}`}>
-                                                        <tr 
-                                                            style={{ backgroundColor: isSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}`, cursor: 'context-menu' }}
-                                                            onContextMenu={e => handleContextMenu(e, i, false, null)}>
-                                                            {columns.map(col => renderItemCell(col, item, i, { 
-                                                                isSelected, hasAccessories, isExpanded: isItemExpanded, itemTotal, 
-                                                                isPackageItem: true, pkgColor, 
-                                                                changeQty, changeNotes, toggleSelect, toggleItemExpand 
-                                                            }))}
-                                                        </tr>
-                                                        
-                                                        {/* Accessories within package item */}
-                                                        {hasAccessories && isItemExpanded && item.accessories.map((acc, accIdx) => (
-                                                            <tr 
-                                                                key={`pkg-acc-${i}-${accIdx}`} 
-                                                                style={{ backgroundColor: '#080a0c', borderLeft: `3px solid ${pkgColor.b}`, cursor: 'context-menu' }}
-                                                                onContextMenu={e => handleContextMenu(e, i, true, accIdx)}>
-                                                                {columns.map(col => renderAccessoryCell(col, acc, i, accIdx, { pkgColor, changeAccessoryQty, changeAccessoryNotes, removeAccessory }))}
-                                                            </tr>
-                                                        ))}
-                                                    </React.Fragment>
+                                                    <tr key={`legacy-pkg-item-${i}`} style={{ backgroundColor: isItemSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}>
+                                                        {columns.map(col => renderItemCell(col, item, i, {
+                                                            isSelected: isItemSelected, hasAccessories: item.accessories?.length > 0, isExpanded: expandedItems[i] !== false, itemTotal,
+                                                            isPackageItem: true, pkgColor,
+                                                            changeQty, changeNotes, toggleSelect, toggleItemExpand
+                                                        }))}
+                                                    </tr>
                                                 );
                                             })}
                                         </React.Fragment>
@@ -2279,10 +2544,16 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                 style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#f87171' }}
                                 onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                                onClick={() => { 
-                                    const pkg = groupedItems.packages.find(p => p.name === contextMenu.packageName);
-                                    if (pkg) del(pkg.indices);
-                                    setContextMenu(null); 
+                                onClick={() => {
+                                    // New-style: find by name, delete single instance
+                                    const newPkg = groupedItems.packages.find(p => p.name === contextMenu.packageName);
+                                    if (newPkg) { del([newPkg.idx]); }
+                                    else {
+                                        // Legacy: find by name, delete all items
+                                        const legacyPkg = groupedItems.legacyPackages.find(p => p.name === contextMenu.packageName);
+                                        if (legacyPkg) del(legacyPkg.indices);
+                                    }
+                                    setContextMenu(null);
                                 }}>
                                 <Icons.Trash /> Delete Package
                             </button>
@@ -2339,14 +2610,14 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                 onClick={() => { onSavePackage([{ ...location.items[contextMenu.itemIdx] }], [contextMenu.itemIdx]); setContextMenu(null); }}>
                                 <Icons.Package /> Save as New Package
                             </button>
-                            {/* Show existing packages to move item into */}
-                            {groupedItems.packages.length > 0 && (
+                            {/* Show existing legacy packages to move item into */}
+                            {groupedItems.legacyPackages.length > 0 && (
                                 <>
                                     <div style={{ padding: '4px 12px', fontSize: '11px', color: '#6e767d', textTransform: 'uppercase' }}>Move to Package</div>
-                                    {groupedItems.packages.map(pkg => {
+                                    {groupedItems.legacyPackages.map(pkg => {
                                         const pkgColor = styles.pkgColor(pkg.name);
                                         return (
-                                            <button 
+                                            <button
                                                 key={pkg.name}
                                                 style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '6px 12px 6px 20px', fontSize: '12px' }}
                                                 onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
@@ -2865,49 +3136,396 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, c
     );
 }
 
-function PackagesView({ packages, onAdd }) {
-    const [show, setShow] = useState(false);
-    const [name, setName] = useState('');
-    const create = () => { if (name.trim()) { onAdd({ id: Date.now().toString(), name: name.trim(), items: [] }); setName(''); setShow(false); } };
+function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackages, onUpdateProjectPackages, catalog, locations, onSyncInstances }) {
+    const [selectedPkgId, setSelectedPkgId] = useState(null);
+    const [showCreate, setShowCreate] = useState(false);
+    const [newName, setNewName] = useState('');
+    const [newScope, setNewScope] = useState('catalog');
+    const [showAddComponent, setShowAddComponent] = useState(false);
+    const [addComponentSearch, setAddComponentSearch] = useState('');
+    const [confirmDelete, setConfirmDelete] = useState(null);
+    const [editingName, setEditingName] = useState(null);
+    const [editNameValue, setEditNameValue] = useState('');
+    const [syncPrompt, setSyncPrompt] = useState(null); // { pkgId, pkgName, newVersion, instanceCount }
+
+    const allPackages = [...(catalogPackages || []), ...(projectPackages || [])];
+    const selectedPkg = allPackages.find(p => p.id === selectedPkgId);
+    const selectedScope = selectedPkg ? (selectedPkg.scope === 'project' ? 'project' : 'catalog') : null;
+
+    // Find all instances of selected package across locations
+    const instanceCount = selectedPkgId ? findAllPackageInstances(locations || [], selectedPkgId).length : 0;
+
+    const createPackage = () => {
+        if (!newName.trim()) return;
+        const pkg = {
+            id: generatePackageId(),
+            name: newName.trim(),
+            scope: newScope,
+            version: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            items: [],
+        };
+        if (newScope === 'catalog') {
+            onUpdateCatalogPackages(prev => [...prev, pkg]);
+        } else {
+            onUpdateProjectPackages(prev => ({ ...prev, packages: [...(prev.packages || []), pkg] }));
+        }
+        setSelectedPkgId(pkg.id);
+        setNewName('');
+        setShowCreate(false);
+    };
+
+    const updatePackage = (pkgId, updater) => {
+        const pkg = allPackages.find(p => p.id === pkgId);
+        if (!pkg) return;
+        const scope = pkg.scope === 'project' ? 'project' : 'catalog';
+        if (scope === 'catalog') {
+            onUpdateCatalogPackages(prev => prev.map(p => p.id === pkgId ? { ...(typeof updater === 'function' ? updater(p) : updater), updatedAt: new Date().toISOString() } : p));
+        } else {
+            onUpdateProjectPackages(prev => ({
+                ...prev,
+                packages: (prev.packages || []).map(p => p.id === pkgId ? { ...(typeof updater === 'function' ? updater(p) : updater), updatedAt: new Date().toISOString() } : p),
+            }));
+        }
+    };
+
+    const deletePackage = (pkgId) => {
+        const pkg = allPackages.find(p => p.id === pkgId);
+        if (!pkg) return;
+        const scope = pkg.scope === 'project' ? 'project' : 'catalog';
+        if (scope === 'catalog') {
+            onUpdateCatalogPackages(prev => prev.filter(p => p.id !== pkgId));
+        } else {
+            onUpdateProjectPackages(prev => ({
+                ...prev,
+                packages: (prev.packages || []).filter(p => p.id !== pkgId),
+            }));
+        }
+        if (selectedPkgId === pkgId) setSelectedPkgId(null);
+        setConfirmDelete(null);
+    };
+
+    const promoteToCatalog = (pkgId) => {
+        const pkg = (projectPackages || []).find(p => p.id === pkgId);
+        if (!pkg) return;
+        const promoted = { ...pkg, scope: 'catalog', updatedAt: new Date().toISOString() };
+        onUpdateCatalogPackages(prev => [...prev, promoted]);
+        onUpdateProjectPackages(prev => ({
+            ...prev,
+            packages: (prev.packages || []).filter(p => p.id !== pkgId),
+        }));
+    };
+
+    const triggerSyncPrompt = (pkgId) => {
+        const pkg = [...(catalogPackages || []), ...(projectPackages || [])].find(p => p.id === pkgId);
+        if (!pkg) return;
+        const instances = findAllPackageInstances(locations || [], pkgId);
+        // Only show prompt if there are existing instances that would be affected
+        if (instances.length > 0) {
+            setSyncPrompt({ pkgId, pkgName: pkg.name, newVersion: (pkg.version || 1) + 1, instanceCount: instances.length });
+        }
+    };
+
+    const handleSyncAll = () => {
+        if (!syncPrompt || !onSyncInstances) return;
+        onSyncInstances(syncPrompt.pkgId, syncPrompt.newVersion);
+        setSyncPrompt(null);
+    };
+
+    const removeComponent = (pkgId, itemIdx) => {
+        triggerSyncPrompt(pkgId);
+        updatePackage(pkgId, p => ({
+            ...p,
+            version: (p.version || 1) + 1,
+            items: p.items.filter((_, i) => i !== itemIdx),
+        }));
+    };
+
+    const updateComponentField = (pkgId, itemIdx, field, value) => {
+        updatePackage(pkgId, p => ({
+            ...p,
+            items: p.items.map((item, i) => i === itemIdx ? { ...item, [field]: value } : item),
+        }));
+    };
+
+    const addComponentFromCatalog = (catalogItem) => {
+        if (!selectedPkgId) return;
+        const newItem = {
+            manufacturer: catalogItem.manufacturer || '',
+            model: catalogItem.model || '',
+            partNumber: catalogItem.partNumber || '',
+            description: catalogItem.description || '',
+            category: catalogItem.category || '',
+            subcategory: catalogItem.subcategory || '',
+            unitCost: catalogItem.unitCost || 0,
+            laborHrsPerUnit: catalogItem.laborHrsPerUnit || 0,
+            uom: catalogItem.uom || 'EA',
+            vendor: catalogItem.vendor || '',
+            qtyPerPackage: 1,
+            qty: 1,
+        };
+        triggerSyncPrompt(selectedPkgId);
+        updatePackage(selectedPkgId, p => ({
+            ...p,
+            version: (p.version || 1) + 1,
+            items: [...(p.items || []), newItem],
+        }));
+        setShowAddComponent(false);
+        setAddComponentSearch('');
+    };
+
+    const filteredCatalog = addComponentSearch.length >= 2 ? (catalog || []).filter(item => {
+        const q = addComponentSearch.toLowerCase();
+        return (item.manufacturer || '').toLowerCase().includes(q) ||
+            (item.model || '').toLowerCase().includes(q) ||
+            (item.partNumber || '').toLowerCase().includes(q) ||
+            (item.description || '').toLowerCase().includes(q);
+    }).slice(0, 50) : [];
+
+    const startRenamePkg = (pkg) => {
+        setEditingName(pkg.id);
+        setEditNameValue(pkg.name);
+    };
+
+    const finishRename = () => {
+        if (editingName && editNameValue.trim()) {
+            updatePackage(editingName, p => ({ ...p, name: editNameValue.trim() }));
+        }
+        setEditingName(null);
+        setEditNameValue('');
+    };
+
+    const renderPkgList = (pkgs, label, scope) => (
+        <div style={{ marginBottom: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid #2f3336' }}>
+                <span style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#8b98a5' }}>{label}</span>
+                <span style={styles.badge(scope === 'catalog' ? 'blue' : 'green')}>{pkgs.length}</span>
+            </div>
+            {pkgs.map(pkg => {
+                const c = styles.pkgColor(pkg.name);
+                const cost = (pkg.items || []).reduce((s, i) => s + ((i.qtyPerPackage || i.qty || 1) * (i.unitCost || 0)), 0);
+                const isSelected = selectedPkgId === pkg.id;
+                return (
+                    <div key={pkg.id} onClick={() => setSelectedPkgId(pkg.id)}
+                        style={{ padding: '10px 12px', cursor: 'pointer', borderLeft: `3px solid ${isSelected ? c.b : 'transparent'}`, backgroundColor: isSelected ? '#1a1f2e' : 'transparent', display: 'flex', alignItems: 'center', gap: '10px', transition: 'background 0.15s' }}
+                        onMouseEnter={e => { if (!isSelected) e.currentTarget.style.backgroundColor = '#161b22'; }}
+                        onMouseLeave={e => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}>
+                        <span style={{ width: '8px', height: '8px', borderRadius: '2px', backgroundColor: c.b, flexShrink: 0 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            {editingName === pkg.id ? (
+                                <input type="text" value={editNameValue} onChange={e => setEditNameValue(e.target.value)} onBlur={finishRename} onKeyDown={e => { if (e.key === 'Enter') finishRename(); if (e.key === 'Escape') { setEditingName(null); setEditNameValue(''); } }} style={{ ...styles.input, padding: '2px 6px', fontSize: '13px', width: '100%' }} autoFocus />
+                            ) : (
+                                <div style={{ fontSize: '13px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pkg.name}</div>
+                            )}
+                            <div style={{ fontSize: '11px', color: '#6e767d', marginTop: '2px' }}>{(pkg.items || []).length} items · {fmtCost(cost)}</div>
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+
+    const pkgCost = selectedPkg ? (selectedPkg.items || []).reduce((s, i) => s + ((i.qtyPerPackage || i.qty || 1) * (i.unitCost || 0)), 0) : 0;
+    const pkgLabor = selectedPkg ? (selectedPkg.items || []).reduce((s, i) => s + ((i.qtyPerPackage || i.qty || 1) * (i.laborHrsPerUnit || 0)), 0) : 0;
+
     return (
         <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                <h2 style={{ margin: 0, fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Package /> Packages <span style={styles.badge('green')}>{packages.length}</span></h2>
-                <button style={styles.button('primary')} onClick={() => setShow(true)}><Icons.Plus /> New Package</button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h2 style={{ margin: 0, fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Package /> Packages <span style={styles.badge('green')}>{allPackages.length}</span></h2>
+                <button style={styles.button('primary')} onClick={() => setShowCreate(true)}><Icons.Plus /> New Package</button>
             </div>
-            {show && (
-                <div style={{ ...styles.card, marginBottom: '24px' }}>
-                    <h3 style={{ margin: '0 0 16px 0' }}>Create New Package</h3>
-                    <div style={{ display: 'flex', gap: '12px' }}>
-                        <input type="text" placeholder="Package name" value={name} onChange={e => setName(e.target.value)} style={{ ...styles.input, flex: 1 }} autoFocus />
-                        <button style={styles.button('secondary')} onClick={() => setShow(false)}>Cancel</button>
-                        <button style={styles.button('primary')} onClick={create}>Create</button>
+
+            {showCreate && (
+                <div style={{ ...styles.card, marginBottom: '20px' }}>
+                    <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>Create New Package</h3>
+                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
+                        <input type="text" placeholder="Package name" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createPackage(); }} style={{ ...styles.input, flex: 1 }} autoFocus />
+                    </div>
+                    <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '12px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px' }}>
+                            <input type="radio" name="pkg-scope" checked={newScope === 'catalog'} onChange={() => setNewScope('catalog')} /> Catalog (global)
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px' }}>
+                            <input type="radio" name="pkg-scope" checked={newScope === 'project'} onChange={() => setNewScope('project')} /> Project-specific
+                        </label>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                        <button style={styles.button('secondary')} onClick={() => { setShowCreate(false); setNewName(''); }}>Cancel</button>
+                        <button style={styles.button('primary')} onClick={createPackage} disabled={!newName.trim()}>Create</button>
                     </div>
                 </div>
             )}
-            {packages.length > 0 ? packages.map(pkg => {
-                const c = styles.pkgColor(pkg.name);
-                const cost = pkg.items?.reduce((s, i) => s + (i.qty * (i.unitCost || 0)), 0) || 0;
-                return (
-                    <div key={pkg.id} style={{ ...styles.card, borderLeft: `4px solid ${c.b}` }}>
-                        <div style={{ ...styles.cardTitle, marginBottom: pkg.items?.length ? '16px' : 0 }}>
-                            <Icons.Package />{pkg.name}<span style={styles.badge('green')}>{pkg.items?.length || 0} items</span>
-                            <span style={{ marginLeft: 'auto', color: '#00ba7c', fontWeight: '600' }}>{fmtCost(cost)}</span>
+
+            <div style={{ display: 'flex', gap: '0', border: '1px solid #2f3336', borderRadius: '12px', overflow: 'hidden', minHeight: '500px', backgroundColor: '#0d1117' }}>
+                {/* Left panel: Package list */}
+                <div style={{ width: '260px', borderRight: '1px solid #2f3336', overflowY: 'auto', flexShrink: 0 }}>
+                    {(catalogPackages || []).length === 0 && (projectPackages || []).length === 0 ? (
+                        <div style={{ padding: '40px 20px', textAlign: 'center', color: '#6e767d' }}>
+                            <div style={{ fontSize: '36px', marginBottom: '12px' }}>📦</div>
+                            <div style={{ fontSize: '13px' }}>No packages yet</div>
+                            <div style={{ fontSize: '12px', marginTop: '4px' }}>Click "New Package" to get started</div>
                         </div>
-                        {pkg.items?.length > 0 && (
-                            <table style={styles.table}>
-                                <thead><tr><th style={styles.th}>Qty</th><th style={styles.th}>Component</th><th style={styles.th}>Cost</th></tr></thead>
-                                <tbody>{pkg.items.map((item, i) => (<tr key={i}><td style={styles.td}>{item.qty}</td><td style={styles.td}>{item.manufacturer} <strong>{item.model}</strong></td><td style={{ ...styles.td, color: '#00ba7c' }}>{fmtCost(item.qty * (item.unitCost || 0))}</td></tr>))}</tbody>
-                            </table>
-                        )}
+                    ) : (
+                        <>
+                            {(catalogPackages || []).length > 0 && renderPkgList(catalogPackages, 'Catalog Packages', 'catalog')}
+                            {(projectPackages || []).length > 0 && renderPkgList(projectPackages, 'Project Packages', 'project')}
+                        </>
+                    )}
+                </div>
+
+                {/* Right panel: Package detail */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
+                    {!selectedPkg ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#6e767d' }}>
+                            <Icons.Package />
+                            <div style={{ fontSize: '14px', marginTop: '12px' }}>Select a package to view details</div>
+                        </div>
+                    ) : (
+                        <div>
+                            {/* Header */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+                                <div>
+                                    <h3 style={{ margin: '0 0 6px 0', fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <span style={{ width: '12px', height: '12px', borderRadius: '3px', backgroundColor: styles.pkgColor(selectedPkg.name).b }} />
+                                        {selectedPkg.name}
+                                    </h3>
+                                    <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#8b98a5' }}>
+                                        <span style={styles.badge(selectedScope === 'catalog' ? 'blue' : 'green')}>{selectedScope === 'catalog' ? 'Catalog' : 'Project'}</span>
+                                        <span>v{selectedPkg.version || 1}</span>
+                                        <span>Used in {instanceCount} location{instanceCount !== 1 ? 's' : ''}</span>
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button style={styles.button('secondary')} onClick={() => startRenamePkg(selectedPkg)} title="Rename"><Icons.Edit /></button>
+                                    {selectedScope === 'project' && (
+                                        <button style={{ ...styles.button('secondary'), fontSize: '11px' }} onClick={() => promoteToCatalog(selectedPkg.id)} title="Promote to catalog package">
+                                            Promote to Catalog
+                                        </button>
+                                    )}
+                                    <button style={{ ...styles.button('secondary'), color: '#f87171', borderColor: '#f8717140' }} onClick={() => setConfirmDelete(selectedPkg.id)} title="Delete package"><Icons.Trash /></button>
+                                </div>
+                            </div>
+
+                            {/* Stats bar */}
+                            <div style={{ display: 'flex', gap: '20px', padding: '12px 16px', backgroundColor: '#161b22', borderRadius: '8px', marginBottom: '16px', fontSize: '13px' }}>
+                                <div><span style={{ color: '#8b98a5' }}>Components: </span><strong>{(selectedPkg.items || []).length}</strong></div>
+                                <div><span style={{ color: '#8b98a5' }}>Unit Cost: </span><strong style={{ color: '#00ba7c' }}>{fmtCost(pkgCost)}</strong></div>
+                                <div><span style={{ color: '#8b98a5' }}>Labor: </span><strong>{pkgLabor.toFixed(1)} hrs</strong></div>
+                            </div>
+
+                            {/* Components table */}
+                            {(selectedPkg.items || []).length > 0 && (
+                                <table style={{ ...styles.table, marginBottom: '16px' }}>
+                                    <thead>
+                                        <tr>
+                                            <th style={{ ...styles.th, width: '60px' }}>Qty/Pkg</th>
+                                            <th style={styles.th}>Manufacturer</th>
+                                            <th style={styles.th}>Model</th>
+                                            <th style={{ ...styles.th, width: '100px' }}>Unit Cost</th>
+                                            <th style={{ ...styles.th, width: '80px' }}>Labor</th>
+                                            <th style={{ ...styles.th, width: '80px' }}>Ext.</th>
+                                            <th style={{ ...styles.th, width: '40px' }}></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {selectedPkg.items.map((item, i) => {
+                                            const qpp = item.qtyPerPackage || item.qty || 1;
+                                            const ext = qpp * (item.unitCost || 0);
+                                            return (
+                                                <tr key={i}>
+                                                    <td style={styles.td}>
+                                                        <input type="number" min="1" value={qpp} onChange={e => updateComponentField(selectedPkg.id, i, 'qtyPerPackage', Math.max(1, parseInt(e.target.value) || 1))} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '50px' }} />
+                                                    </td>
+                                                    <td style={styles.td}>{item.manufacturer}</td>
+                                                    <td style={{ ...styles.td, fontWeight: '600' }}>{item.model}</td>
+                                                    <td style={styles.td}>
+                                                        <input type="number" min="0" step="0.01" value={item.unitCost || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'unitCost', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '80px' }} />
+                                                    </td>
+                                                    <td style={styles.td}>
+                                                        <input type="number" min="0" step="0.1" value={item.laborHrsPerUnit || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'laborHrsPerUnit', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '60px' }} />
+                                                    </td>
+                                                    <td style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(ext)}</td>
+                                                    <td style={styles.td}>
+                                                        <button style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }} onClick={() => removeComponent(selectedPkg.id, i)} title="Remove component">×</button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            )}
+
+                            {/* Add Component */}
+                            {showAddComponent ? (
+                                <div style={{ ...styles.card, padding: '16px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                        <h4 style={{ margin: 0, fontSize: '14px' }}>Add Component from Catalog</h4>
+                                        <button style={{ background: 'none', border: 'none', color: '#8b98a5', cursor: 'pointer', fontSize: '18px' }} onClick={() => { setShowAddComponent(false); setAddComponentSearch(''); }}>×</button>
+                                    </div>
+                                    <input type="text" placeholder="Search catalog by name, model, or part number..." value={addComponentSearch} onChange={e => setAddComponentSearch(e.target.value)} style={{ ...styles.input, marginBottom: '8px' }} autoFocus />
+                                    {addComponentSearch.length >= 2 && (
+                                        <div style={{ maxHeight: '250px', overflowY: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
+                                            {filteredCatalog.length === 0 ? (
+                                                <div style={{ padding: '16px', textAlign: 'center', color: '#6e767d', fontSize: '13px' }}>No results</div>
+                                            ) : filteredCatalog.map((item, i) => (
+                                                <div key={i} onClick={() => addComponentFromCatalog(item)} style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #2f3336', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px' }}
+                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#161b22'}
+                                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}>
+                                                    <div>
+                                                        <span style={{ color: '#8b98a5' }}>{item.manufacturer}</span>{' '}
+                                                        <strong>{item.model}</strong>
+                                                        {item.partNumber && <span style={{ color: '#6e767d', marginLeft: '8px', fontSize: '11px' }}>{item.partNumber}</span>}
+                                                    </div>
+                                                    <span style={{ color: '#00ba7c', fontWeight: '600' }}>{fmtCost(item.unitCost || 0)}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <button style={styles.button('secondary')} onClick={() => setShowAddComponent(true)}>
+                                    <Icons.Plus /> Add Component
+                                </button>
+                            )}
+
+                            {/* Delete confirmation */}
+                            {confirmDelete === selectedPkg.id && (
+                                <div style={{ ...styles.card, marginTop: '16px', borderColor: '#f8717140', padding: '16px' }}>
+                                    <div style={{ marginBottom: '12px', fontSize: '14px' }}>
+                                        Delete <strong>{selectedPkg.name}</strong>?
+                                        {instanceCount > 0 && <span style={{ color: '#f59e0b' }}> This package is used in {instanceCount} location{instanceCount !== 1 ? 's' : ''}. Those instances will show as "missing".</span>}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                        <button style={styles.button('secondary')} onClick={() => setConfirmDelete(null)}>Cancel</button>
+                                        <button style={{ ...styles.button('primary'), backgroundColor: '#f87171' }} onClick={() => deletePackage(selectedPkg.id)}>Delete</button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Sync Prompt Modal */}
+            {syncPrompt && (
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setSyncPrompt(null)}>
+                    <div style={{ ...styles.card, maxWidth: '440px', width: '90%', padding: '24px' }} onClick={e => e.stopPropagation()}>
+                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <Icons.Package /> Update Package Instances?
+                        </h3>
+                        <p style={{ margin: '0 0 16px 0', color: '#8b98a5', fontSize: '14px', lineHeight: '1.5' }}>
+                            You've modified <strong style={{ color: '#e7e9ea' }}>{syncPrompt.pkgName}</strong>.
+                            There {syncPrompt.instanceCount === 1 ? 'is' : 'are'} <strong style={{ color: '#e7e9ea' }}>{syncPrompt.instanceCount}</strong> instance{syncPrompt.instanceCount !== 1 ? 's' : ''} of this package across your project locations.
+                        </p>
+                        <p style={{ margin: '0 0 20px 0', color: '#8b98a5', fontSize: '13px' }}>
+                            Update all instances to use the new definition (v{syncPrompt.newVersion}), or skip to leave them on the previous version.
+                        </p>
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                            <button style={styles.button('secondary')} onClick={() => setSyncPrompt(null)}>Skip</button>
+                            <button style={styles.button('primary')} onClick={handleSyncAll}>Update All Instances</button>
+                        </div>
                     </div>
-                );
-            }) : (
-                <div style={styles.emptyState}>
-                    <div style={{ fontSize: '48px', marginBottom: '16px' }}>📦</div>
-                    <h3 style={{ color: '#8b98a5' }}>No packages yet</h3>
-                    <p style={{ margin: '0 0 20px 0' }}>Create reusable component packages</p>
-                    <button style={styles.button('primary')} onClick={() => setShow(true)}><Icons.Plus /> New Package</button>
                 </div>
             )}
         </div>
@@ -2915,14 +3533,14 @@ function PackagesView({ packages, onAdd }) {
 }
 
 // All Locations View - shows all locations with items in a unified workspace
-function AllLocationsView({ 
-    locations, 
-    onUpdate, 
-    onSearch, 
-    clipboard, 
-    onCopy, 
-    onPaste, 
-    onSavePackage, 
+function AllLocationsView({
+    locations,
+    onUpdate,
+    onSearch,
+    clipboard,
+    onCopy,
+    onPaste,
+    onSavePackage,
     catalog,
     onAddAccessoryToItem,
     onConvertToAccessory,
@@ -2933,7 +3551,9 @@ function AllLocationsView({
     onExpandAllLocations,
     onCollapseAllLocations,
     compactMode,
-    onAddToCatalog
+    onAddToCatalog,
+    catalogPkgs,
+    projectPkgs
 }) {
     const [selectedItems, setSelectedItems] = useState({}); // { locationId: [indices] }
     const [expandedItems, setExpandedItems] = useState({}); // { locationId: { itemIdx: bool } }
@@ -2986,34 +3606,39 @@ function AllLocationsView({
     // Group items by package for a location
     const getGroupedItems = (location) => {
         const items = location.items || [];
-        const packages = {};
+        const packageInstances = [];
+        const legacyPackages = {};
         const standalone = [];
-        
+
         items.forEach((item, idx) => {
-            if (item.packageName) {
-                if (!packages[item.packageName]) {
-                    packages[item.packageName] = { name: item.packageName, items: [], indices: [] };
+            if (item.type === 'package') {
+                const resolved = resolvePackageInstance(item, catalogPkgs, projectPkgs);
+                packageInstances.push({
+                    instance: item, idx, resolved, name: item.packageName, qty: item.qty || 1,
+                    isOutOfDate: resolved?.isOutOfDate || false, isMissing: resolved?.isMissing || false,
+                    cost: resolved?.totalCost || 0, labor: resolved?.totalLabor || 0,
+                    itemCount: resolved?.expandedItems?.length || 0, expandedItems: resolved?.expandedItems || [],
+                });
+            } else if (item.packageName) {
+                if (!legacyPackages[item.packageName]) {
+                    legacyPackages[item.packageName] = { name: item.packageName, items: [], indices: [] };
                 }
-                packages[item.packageName].items.push(item);
-                packages[item.packageName].indices.push(idx);
+                legacyPackages[item.packageName].items.push(item);
+                legacyPackages[item.packageName].indices.push(idx);
             } else {
                 standalone.push({ item, idx });
             }
         });
-        
-        // Calculate package totals
-        const pkgList = Object.values(packages).map(pkg => {
+
+        // Calculate legacy package totals
+        const legacyPkgList = Object.values(legacyPackages).map(pkg => {
             let cost = 0, labor = 0;
-            pkg.items.forEach(item => {
-                const t = calculateItemTotal(item);
-                cost += t.cost;
-                labor += t.labor;
-            });
+            pkg.items.forEach(item => { const t = calculateItemTotal(item); cost += t.cost; labor += t.labor; });
             const itemCount = pkg.items.reduce((count, item) => count + 1 + (item.accessories?.length || 0), 0);
             return { ...pkg, cost, labor, itemCount };
         });
-        
-        return { packages: pkgList, standalone };
+
+        return { packages: packageInstances, legacyPackages: legacyPkgList, standalone };
     };
     
     // Change handlers
@@ -3216,7 +3841,7 @@ function AllLocationsView({
             {allLocations.map(location => {
                 const isExpanded = expandedLocations[location.id] !== false;
                 const groupedItems = getGroupedItems(location);
-                const totals = calculateTotals(location);
+                const totals = calculateTotals(location, catalogPkgs, projectPkgs);
                 const locationSelected = selectedItems[location.id] || [];
                 const mainItemCount = (location.items || []).length;
                 
@@ -3310,116 +3935,86 @@ function AllLocationsView({
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {/* Packages */}
+                                            {/* Package instances (new format) */}
                                             {groupedItems.packages.map(pkg => {
                                                 const pkgColor = styles.pkgColor(pkg.name);
                                                 const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
-                                                
+                                                const isSelected = locationSelected.includes(pkg.idx);
+
+                                                const changePkgQty = (val) => {
+                                                    onUpdate(location.id, items => {
+                                                        const newItems = [...items];
+                                                        newItems[pkg.idx] = { ...newItems[pkg.idx], qty: Math.max(1, parseInt(val) || 1) };
+                                                        return newItems;
+                                                    });
+                                                };
+
                                                 return (
-                                                    <React.Fragment key={`pkg-${pkg.name}`}>
-                                                        {/* Package header */}
+                                                    <React.Fragment key={`pkg-${pkg.idx}`}>
                                                         <tr style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}` }}>
-                                                            <td style={tdStyle}>
-                                                                <input 
-                                                                    type="checkbox" 
-                                                                    checked={pkg.indices.every(idx => locationSelected.includes(idx))}
-                                                                    onChange={() => {
-                                                                        const allSelected = pkg.indices.every(idx => locationSelected.includes(idx));
-                                                                        if (allSelected) {
-                                                                            setSelectedItems(prev => ({
-                                                                                ...prev,
-                                                                                [location.id]: (prev[location.id] || []).filter(i => !pkg.indices.includes(i))
-                                                                            }));
-                                                                        } else {
-                                                                            setSelectedItems(prev => ({
-                                                                                ...prev,
-                                                                                [location.id]: [...new Set([...(prev[location.id] || []), ...pkg.indices])]
-                                                                            }));
-                                                                        }
-                                                                    }}
-                                                                />
-                                                            </td>
-                                                            <td style={tdStyle}>
-                                                                <button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>
-                                                                    {isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}
-                                                                </button>
-                                                            </td>
-                                                            <td colSpan="5" style={{ ...tdStyle, fontWeight: '700' }}>
-                                                                <Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span>
-                                                                <span style={{ ...styles.badge('green'), marginLeft: '8px', fontSize: '10px' }}>{pkg.itemCount} items</span>
-                                                            </td>
+                                                            <td style={tdStyle}><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(location.id, pkg.idx)} /></td>
+                                                            <td style={tdStyle}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>
+                                                            <td style={tdStyle}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px', fontWeight: '700' }} min="1" /></td>
+                                                            <td style={tdStyle}></td>
+                                                            <td style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isOutOfDate && <span style={{ color: '#f59e0b', fontSize: '11px' }}>⚠</span>}</td>
+                                                            <td style={tdStyle}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items × {pkg.qty}</span></td>
+                                                            <td style={tdStyle}>{pkg.instance.notes || ''}</td>
                                                             <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
                                                             <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
                                                         </tr>
-                                                        
-                                                        {/* Package items */}
+                                                        {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
+                                                            <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}>
+                                                                <td style={tdStyle}></td>
+                                                                <td style={tdStyle}></td>
+                                                                <td style={{ ...tdStyle, color: '#8b98a5', fontSize: '12px' }}>{fmtQty(item.qty)}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}×{pkg.qty}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>├ {item.manufacturer}</td>
+                                                                <td style={{ ...tdStyle, color: '#1d9bf0', fontSize: '12px' }}>{item.model}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.description}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtCost(item.unitCost || 0)}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#00ba7c' }}>{fmtCost((item.qty || 0) * (item.unitCost || 0))}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtHrs((item.qty || 0) * (item.laborHrsPerUnit || 0))}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </React.Fragment>
+                                                );
+                                            })}
+
+                                            {/* Legacy packages (old format) */}
+                                            {groupedItems.legacyPackages.map(pkg => {
+                                                const pkgColor = styles.pkgColor(pkg.name);
+                                                const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
+                                                return (
+                                                    <React.Fragment key={`legacy-${pkg.name}`}>
+                                                        <tr style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}` }}>
+                                                            <td style={tdStyle}><input type="checkbox" checked={pkg.indices.every(idx => locationSelected.includes(idx))} onChange={() => {
+                                                                const allSelected = pkg.indices.every(idx => locationSelected.includes(idx));
+                                                                setSelectedItems(prev => ({ ...prev, [location.id]: allSelected ? (prev[location.id] || []).filter(i => !pkg.indices.includes(i)) : [...new Set([...(prev[location.id] || []), ...pkg.indices])] }));
+                                                            }} /></td>
+                                                            <td style={tdStyle}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>
+                                                            <td colSpan="5" style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> <span style={{ fontSize: '10px', color: '#6e767d' }}>(legacy)</span></td>
+                                                            <td style={tdStyle}></td>
+                                                            <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
+                                                            <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
+                                                        </tr>
                                                         {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => {
                                                             const i = pkg.indices[pkgItemIdx];
-                                                            const isSelected = locationSelected.includes(i);
-                                                            const hasAccessories = item.accessories?.length > 0;
-                                                            const isItemExpanded = expandedItems[location.id]?.[i] !== false;
+                                                            const isItemSelected = locationSelected.includes(i);
                                                             const itemTotal = calculateItemTotal(item);
-                                                            
                                                             return (
-                                                                <React.Fragment key={`pkg-item-${i}`}>
-                                                                    <tr 
-                                                                        style={{ backgroundColor: isSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
-                                                                        onContextMenu={e => handleContextMenu(e, location.id, i)}
-                                                                    >
-                                                                        <td style={{ ...tdStyle, paddingLeft: '24px' }}>
-                                                                            <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(location.id, i)} />
-                                                                        </td>
-                                                                        <td style={tdStyle}>
-                                                                            {hasAccessories && (
-                                                                                <button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => toggleItemExpand(location.id, i)}>
-                                                                                    {isItemExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}
-                                                                                </button>
-                                                                            )}
-                                                                        </td>
-                                                                        <td style={tdStyle}>
-                                                                            <input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px' }} min="0" />
-                                                                        </td>
-                                                                        <td style={tdStyle}>
-                                                                            <input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} />
-                                                                        </td>
-                                                                        <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>├ {item.manufacturer}</td>
-                                                                        <td style={tdStyle}><strong>{item.model}</strong></td>
-                                                                        <td style={{ ...tdStyle, fontSize: '12px' }}>
-                                                                            {item.description}
-                                                                            {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
-                                                                        </td>
-                                                                        <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtCost(item.unitCost)}</td>
-                                                                        <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
-                                                                        <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
-                                                                    </tr>
-                                                                    
-                                                                    {/* Accessories */}
-                                                                    {hasAccessories && isItemExpanded && item.accessories.map((acc, accIdx) => (
-                                                                        <tr key={`acc-${accIdx}`} style={{ backgroundColor: '#080a0c', borderLeft: `3px solid ${pkgColor.b}` }}
-                                                                            onContextMenu={e => handleContextMenu(e, location.id, i, true, accIdx)}>
-                                                                            <td style={tdStyle}></td>
-                                                                            <td style={tdStyle}></td>
-                                                                            <td style={{ ...tdStyle, paddingLeft: '40px' }}>
-                                                                                <input type="number" value={acc.qty} onChange={e => changeAccessoryQty(location.id, i, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px' }} min="0" />
-                                                                            </td>
-                                                                            <td style={tdStyle}>
-                                                                                <input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(location.id, i, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '10px' }} />
-                                                                            </td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#6e767d' }}>└ {acc.manufacturer}</td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.model}</td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#6e767d' }}>{acc.description}</td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#6e767d' }}>{fmtCost(acc.unitCost)}</td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px', color: '#4a6e4a' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>
-                                                                            <td style={{ ...tdStyle, fontSize: '11px' }}>
-                                                                                <span style={{ color: '#6e767d' }}>{fmtHrs((acc.qty || 0) * (acc.laborHrsPerUnit || 0))}</span>
-                                                                                <button style={{ ...styles.iconButton, marginLeft: '4px', color: '#4a5568', padding: '2px' }} onClick={() => removeAccessory(location.id, i, accIdx)}>
-                                                                                    <Icons.X />
-                                                                                </button>
-                                                                            </td>
-                                                                        </tr>
-                                                                    ))}
-                                                                </React.Fragment>
+                                                                <tr key={`legacy-item-${i}`} style={{ backgroundColor: isItemSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }} onContextMenu={e => handleContextMenu(e, location.id, i)}>
+                                                                    <td style={{ ...tdStyle, paddingLeft: '24px' }}><input type="checkbox" checked={isItemSelected} onChange={() => toggleSelect(location.id, i)} /></td>
+                                                                    <td style={tdStyle}></td>
+                                                                    <td style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '50px' }} min="0" /></td>
+                                                                    <td style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} /></td>
+                                                                    <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>├ {item.manufacturer}</td>
+                                                                    <td style={tdStyle}><strong>{item.model}</strong></td>
+                                                                    <td style={{ ...tdStyle, fontSize: '12px' }}>{item.description}</td>
+                                                                    <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtCost(item.unitCost)}</td>
+                                                                    <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
+                                                                    <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
+                                                                </tr>
                                                             );
                                                         })}
                                                     </React.Fragment>
@@ -3556,13 +4151,13 @@ function AllLocationsView({
                                     onClick={() => { onSavePackage([{ ...item }], [contextMenu.itemIdx], contextMenu.locationId); setContextMenu(null); }}>
                                     <Icons.Package /> Save as New Package
                                 </button>
-                                {groupedItems.packages.length > 0 && (
+                                {groupedItems.legacyPackages.length > 0 && (
                                     <>
                                         <div style={{ padding: '4px 12px', fontSize: '11px', color: '#6e767d', textTransform: 'uppercase' }}>Move to Package</div>
-                                        {groupedItems.packages.map(pkg => {
+                                        {groupedItems.legacyPackages.map(pkg => {
                                             const pkgColor = styles.pkgColor(pkg.name);
                                             return (
-                                                <button 
+                                                <button
                                                     key={pkg.name}
                                                     style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '6px 12px 6px 20px', fontSize: '12px' }}
                                                     onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
@@ -4524,10 +5119,13 @@ function App() {
     // Calculate project totals
     const getProjectTotals = (proj) => {
         let cost = 0, labor = 0, items = 0;
+        const catalogPkgs = packages;
+        const projectPkgs = proj.packages || [];
         const calc = (locs) => {
             for (const loc of locs) {
                 if (loc.items) {
-                    for (const item of loc.items) {
+                    const flatItems = getFlattenedItems(loc, catalogPkgs, projectPkgs);
+                    for (const item of flatItems) {
                         cost += (item.qty || 0) * (item.unitCost || 0);
                         labor += (item.qty || 0) * (item.laborHrsPerUnit || 0);
                         items += 1;
@@ -4608,9 +5206,27 @@ function App() {
                     setActiveProjectId(data.activeProjectId);
                     setShowProjectsHome(false);
                 }
-                if (data.packages?.length > 0) setPackages(data.packages);
+                // Migrate package definitions to new format
+                let loadedPackages = data.packages?.length > 0 ? migratePackageDefinitions(data.packages) : [];
+                if (loadedPackages.length > 0) setPackages(loadedPackages);
+
+                // Migrate old packageName items to package instances
+                let allNewDefs = [];
+                const pkgMigratedProjects = migratedProjects.map(p => {
+                    const { project: mp, newPackageDefs } = migrateProjectPackages(p, [...loadedPackages, ...allNewDefs]);
+                    allNewDefs = [...allNewDefs, ...newPackageDefs];
+                    return mp;
+                });
+                if (allNewDefs.length > 0) {
+                    loadedPackages = [...loadedPackages, ...allNewDefs];
+                    setPackages(loadedPackages);
+                }
+                if (pkgMigratedProjects.some((p, i) => p !== migratedProjects[i])) {
+                    setProjects(pkgMigratedProjects);
+                }
+
                 if (data.templates) setTemplates(data.templates);
-            } catch (e) { console.error('Failed to load saved data'); }
+            } catch (e) { console.error('Failed to load saved data', e); }
         } else {
             // Migrate from old single-project format
             const oldSaved = localStorage.getItem('av-estimator-data');
@@ -4735,7 +5351,7 @@ function App() {
 
         locationsWithItems.forEach((location, index) => {
             setTimeout(() => {
-                const wb = generateEsticomWorkbook(location);
+                const wb = generateEsticomWorkbook(location, packages, project.packages);
                 const filename = sanitizeFilename(location.path || location.name) + '.xlsx';
                 XLSX.writeFile(wb, filename);
             }, index * 150);
@@ -4751,7 +5367,8 @@ function App() {
         if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
         const partMap = {};
         for (const location of locationsWithItems) {
-            for (const item of (location.items || [])) {
+            const flatItems = getFlattenedItems(location, packages, project.packages);
+            for (const item of flatItems) {
                 const key = item.partNumber || (item.manufacturer + '|' + item.model);
                 if (partMap[key]) { partMap[key].qty += (item.qty || 0); }
                 else { partMap[key] = { qty: item.qty || 0, name: item.description || ((item.manufacturer || '') + ' ' + (item.model || '')).trim(), manufacturer: item.manufacturer || '', supplier: item.vendor || '', partNumber: item.partNumber || '', uom: item.uom || 'EA', unitCost: item.unitCost || 0 }; }
@@ -4781,11 +5398,12 @@ function App() {
         const locationsWithItems = getLocationsWithItems(project.locations);
         const partMap = {};
         for (const location of locationsWithItems) {
-            for (const item of (location.items || [])) {
+            const flatItems = getFlattenedItems(location, packages, project.packages);
+            for (const item of flatItems) {
                 const key = item.partNumber || (item.manufacturer + '|' + item.model);
                 if (partMap[key]) {
                     partMap[key].totalQty += (item.qty || 0);
-                    partMap[key].locations.push(location.path || location.name);
+                    if (!partMap[key].locations.includes(location.path || location.name)) partMap[key].locations.push(location.path || location.name);
                 } else {
                     partMap[key] = {
                         key,
@@ -4831,7 +5449,7 @@ function App() {
         return Object.values(partMap).sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.manufacturer || '').localeCompare(b.manufacturer || ''));
     };
 
-    // Update unit cost or labor across all matching items in all locations
+    // Update unit cost or labor across all matching items in all locations (and package definitions)
     const updateConsolidatedField = (partKey, field, value) => {
         const numVal = parseFloat(value);
         if (isNaN(numVal) || numVal < 0) return;
@@ -4839,6 +5457,7 @@ function App() {
             let items = loc.items;
             if (items) {
                 items = items.map(item => {
+                    if (item.type === 'package') return item; // Package instances are read-only; update the definitions instead
                     const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
                     let updatedItem = itemKey === partKey ? { ...item, [field]: numVal } : item;
                     if (updatedItem.accessories) {
@@ -4853,6 +5472,40 @@ function App() {
             const children = loc.children ? updateLocs(loc.children) : loc.children;
             return { ...loc, items, children };
         });
+        // Also update matching items within package definitions (catalog + project)
+        const updatePkgItems = (pkgs) => pkgs.map(pkg => ({
+            ...pkg,
+            items: (pkg.items || []).map(item => {
+                const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
+                let updatedItem = itemKey === partKey ? { ...item, [field]: numVal } : item;
+                if (updatedItem.accessories) {
+                    updatedItem = { ...updatedItem, accessories: updatedItem.accessories.map(acc => {
+                        const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                        return accKey === partKey ? { ...acc, [field]: numVal } : acc;
+                    })};
+                }
+                return updatedItem;
+            }),
+        }));
+        setPackages(prev => updatePkgItems(prev));
+        setProject(p => ({
+            ...p,
+            locations: updateLocs(p.locations),
+            packages: p.packages ? updatePkgItems(p.packages) : p.packages,
+        }));
+    };
+
+    // Sync all instances of a package to a specific version
+    const syncPackageInstances = (packageId, newVersion) => {
+        const updateLocs = (locs) => locs.map(loc => ({
+            ...loc,
+            items: (loc.items || []).map(item =>
+                item.type === 'package' && item.packageId === packageId
+                    ? { ...item, packageVersion: newVersion }
+                    : item
+            ),
+            children: loc.children ? updateLocs(loc.children) : loc.children,
+        }));
         setProject(p => ({ ...p, locations: updateLocs(p.locations) }));
     };
 
@@ -5278,11 +5931,19 @@ function App() {
         showToast(`Item moved to "${packageName}"`);
     };
     
-    const insertPkg = (pkg, qty) => { 
+    const insertPkg = (pkg, qty) => {
         const targetLocationId = searchTargetLocation || (selected ? selected.id : null);
         const targetLocation = targetLocationId ? findLocation(project.locations, targetLocationId) : null;
         if (targetLocation) {
-            updateItems(targetLocationId, [...(targetLocation.items || []), ...pkg.items.map(i => ({ ...i, qty: i.qty * qty, packageName: pkg.name }))]);
+            const newInstance = {
+                type: 'package',
+                packageId: pkg.id,
+                packageName: pkg.name,
+                packageVersion: pkg.version || 1,
+                qty: qty,
+                notes: '',
+            };
+            updateItems(targetLocationId, [...(targetLocation.items || []), newInstance]);
         }
         setSearchTargetLocation(null);
     };
@@ -5333,31 +5994,52 @@ function App() {
         setShowSavePackage(true);
     };
     
-    const savePackage = (name) => {
-        // Save to package catalog
-        const newPkg = { id: Date.now().toString(), name, items: pendingPackageItems.map(i => ({ ...i })) };
-        setPackages(p => [...p, newPkg]);
-        
-        // Determine which location to update
+    const savePackage = (name, scope = 'catalog') => {
+        const pkgId = generatePackageId();
+        const newPkg = {
+            id: pkgId,
+            name,
+            scope,
+            version: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            items: pendingPackageItems.map(i => {
+                const { packageName: _, ...rest } = i;
+                return { ...rest, qtyPerPackage: i.qty || 1 };
+            }),
+        };
+
+        if (scope === 'catalog') {
+            setPackages(p => [...p, newPkg]);
+        } else {
+            setProjectDirect(p => ({
+                ...p,
+                packages: [...(p.packages || []), newPkg],
+            }));
+        }
+
+        // Replace selected items with a single package instance
         const targetLocationId = pendingPackageLocationId || (selected ? selected.id : null);
         const targetLocation = targetLocationId ? findLocation(project.locations, targetLocationId) : null;
-        
-        // Also update the items in the target location to be part of this package
+
         if (targetLocation && pendingPackageIndices.length > 0) {
-            const updatedItems = targetLocation.items.map((item, idx) => {
-                if (pendingPackageIndices.includes(idx)) {
-                    return { ...item, packageName: name };
-                }
-                return item;
-            });
-            updateItems(targetLocationId, updatedItems);
+            const newInstance = {
+                type: 'package',
+                packageId: pkgId,
+                packageName: name,
+                packageVersion: 1,
+                qty: 1,
+                notes: '',
+            };
+            const remainingItems = targetLocation.items.filter((_, idx) => !pendingPackageIndices.includes(idx));
+            updateItems(targetLocationId, [...remainingItems, newInstance]);
         }
-        
+
         setShowSavePackage(false);
         setPendingPackageItems([]);
         setPendingPackageIndices([]);
         setPendingPackageLocationId(null);
-        showToast(`Package "${name}" saved`);
+        showToast(`Package "${name}" saved as ${scope} package`);
     };
     
     const handleSaveTemplate = () => {
@@ -5388,7 +6070,7 @@ function App() {
     };
 
     const selectedDepth = selected ? getDepth(selected.id) : -1;
-    const projectTotals = (project.locations || []).reduce((acc, loc) => { const t = calculateTotals(loc); return { cost: acc.cost + t.cost, labor: acc.labor + t.labor, itemCount: acc.itemCount + t.itemCount }; }, { cost: 0, labor: 0, itemCount: 0 });
+    const projectTotals = (project.locations || []).reduce((acc, loc) => { const t = calculateTotals(loc, packages, project.packages); return { cost: acc.cost + t.cost, labor: acc.labor + t.labor, itemCount: acc.itemCount + t.itemCount }; }, { cost: 0, labor: 0, itemCount: 0 });
 
     // Auth gate
     if (authLoading) {
@@ -5599,9 +6281,11 @@ function App() {
                                                     : [...prev, loc]
                                             );
                                         }}
-                                        searchTerm={locationSearch} 
-                                        expandedState={expandedLocations} 
-                                        onToggleExpand={toggleExpand} 
+                                        searchTerm={locationSearch}
+                                        expandedState={expandedLocations}
+                                        onToggleExpand={toggleExpand}
+                                        catalogPkgs={packages}
+                                        projectPkgs={project.packages}
                                     />
                                 ) : (
                                     <div style={{ padding: '30px 20px', textAlign: 'center', color: '#6e767d', fontSize: '14px' }}>No locations yet.<br />Click "Add Locations" above.</div>
@@ -5660,6 +6344,8 @@ function App() {
                                         onMoveToPackage={handleMoveToPackage}
                                         compactMode={compactMode}
                                         onAddToCatalog={handleAddToCatalog}
+                                        catalogPkgs={packages}
+                                        projectPkgs={project.packages}
                                     />
                                 ) : (
                                     <div style={styles.emptyState}>
@@ -5720,6 +6406,8 @@ function App() {
                                     }}
                                     compactMode={compactMode}
                                     onAddToCatalog={handleAddToCatalog}
+                                    catalogPkgs={packages}
+                                    projectPkgs={project.packages}
                                 />
                             )}
                         </section>
@@ -5737,7 +6425,7 @@ function App() {
                         />
                     </section>
                 )}
-                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView packages={packages} onAdd={p => setPackages(ps => [...ps, p])} /></section>}
+                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={project.packages || []} onUpdateCatalogPackages={setPackages} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={project.locations || []} onSyncInstances={syncPackageInstances} /></section>}
                 {tab === 'reports' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
                         <h2 style={{ margin: '0 0 24px 0', fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Download /> Reports & Exports</h2>
@@ -5833,11 +6521,11 @@ function App() {
                 )}
             </main>
 
-            {showSearch && <SearchModal catalog={catalog} packages={packages} onClose={() => setShowSearch(false)} onInsert={insertComps} onInsertPkg={insertPkg} />}
+            {showSearch && <SearchModal catalog={catalog} packages={packages} projectPackages={project.packages || []} onClose={() => setShowSearch(false)} onInsert={insertComps} onInsertPkg={insertPkg} />}
             {showAddLocation && <AddLocationModal isTopLevel={true} onClose={() => setShowAddLocation(false)} onAdd={addLocations} />}
             {showAddSublocation && selected && <AddLocationModal parent={selected} isTopLevel={false} onClose={() => setShowAddSublocation(false)} onAdd={addLocations} />}
             {showDuplicate && (duplicateTarget || selected) && <DuplicateModal location={duplicateTarget || selected} onClose={() => { setShowDuplicate(false); setDuplicateTarget(null); }} onDuplicate={duplicateStructure} />}
-            {showDelete && deleteTargets.length > 0 && <DeleteConfirmModal locations={deleteTargets} onClose={() => { setShowDelete(false); setDeleteTargets([]); setMultiSelectLocations([]); }} onDelete={deleteLocation} />}
+            {showDelete && deleteTargets.length > 0 && <DeleteConfirmModal locations={deleteTargets} onClose={() => { setShowDelete(false); setDeleteTargets([]); setMultiSelectLocations([]); }} onDelete={deleteLocation} catalogPkgs={packages} projectPkgs={project.packages} />}
             
             {/* Revision Prompt Modal */}
             {showRevisionPrompt && (
@@ -5854,8 +6542,18 @@ function App() {
                     <div style={{ ...styles.modalContent, width: '500px' }} onClick={e => e.stopPropagation()}>
                         <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '10px' }}><Icons.Package /> Save as Package</h2>
                         <p style={{ color: '#8b98a5', fontSize: '14px', marginBottom: '16px' }}>Save {pendingPackageItems.length} component{pendingPackageItems.length > 1 ? 's' : ''} as a reusable package.</p>
-                        <form onSubmit={e => { e.preventDefault(); const name = e.target.elements.pkgName.value.trim(); if (name) savePackage(name); }}>
+                        <form onSubmit={e => { e.preventDefault(); const name = e.target.elements.pkgName.value.trim(); const scope = e.target.elements.pkgScope.value; if (name) savePackage(name, scope); }}>
                             <input name="pkgName" type="text" placeholder="Package name (e.g., Small Huddle - Logitech)" style={styles.input} autoFocus />
+                            <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: '#8b98a5' }}>
+                                    <input type="radio" name="pkgScope" value="catalog" defaultChecked style={{ accentColor: '#1d9bf0' }} />
+                                    Catalog Package <span style={{ fontSize: '11px', color: '#6e767d' }}>(reusable across all projects)</span>
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: '#8b98a5' }}>
+                                    <input type="radio" name="pkgScope" value="project" style={{ accentColor: '#1d9bf0' }} />
+                                    Project Package <span style={{ fontSize: '11px', color: '#6e767d' }}>(this project only)</span>
+                                </label>
+                            </div>
                             <div style={{ ...styles.preview, marginTop: '16px', maxHeight: '200px' }}>
                                 {pendingPackageItems.map((item, i) => (
                                     <div key={i} style={{ ...styles.previewItem, justifyContent: 'space-between' }}>
