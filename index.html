@@ -27,6 +27,10 @@
         ::-webkit-scrollbar-thumb { background: #2f3336; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #404447; }
         input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #1d9bf0; }
+        h1, h2, h3, h4, h5, h6, p, span, label, div { color: inherit; }
+        body { color: #e7e9ea; }
+        input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cursor: pointer; }
+        select { color: #e7e9ea; }
     </style>
 </head>
 <body>
@@ -753,6 +757,12 @@ function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
     const [filterSubcategory, setFilterSubcategory] = useState('');
     const [filterManufacturer, setFilterManufacturer] = useState('');
     const searchRef = useRef(null);
+
+    // Custom item state
+    const [customItem, setCustomItem] = useState({
+        manufacturer: '', model: '', partNumber: '', description: '',
+        category: '', subcategory: '', unitCost: '', laborHrsPerUnit: '', uom: 'EA'
+    });
     
     // Get unique values for dropdowns
     const categories = useMemo(() => [...new Set(catalog.map(c => c.category))].sort(), [catalog]);
@@ -856,6 +866,9 @@ function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
                         </button>
                         <button style={{ ...styles.smallButton, backgroundColor: tab === 'packages' ? '#1d9bf0' : '#2f3336' }} onClick={() => setTab('packages')}>
                             Packages ({pkgResults.length})
+                        </button>
+                        <button style={{ ...styles.smallButton, backgroundColor: tab === 'custom' ? '#00ba7c' : '#2f3336' }} onClick={() => setTab('custom')}>
+                            <Icons.Plus /> Custom Item
                         </button>
                     </div>
                 </div>
@@ -991,29 +1004,106 @@ function SearchModal({ catalog, packages, onClose, onInsert, onInsertPkg }) {
                     </div>
                 )}
                 
+                {tab === 'custom' && (
+                    <div style={{ padding: '4px 0' }}>
+                        <p style={{ color: '#8b98a5', fontSize: '13px', marginBottom: '16px' }}>Add a component that isn't in the catalog. Fill in the details below.</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Manufacturer</label>
+                                <input type="text" placeholder="e.g., Crestron" value={customItem.manufacturer} onChange={e => setCustomItem(p => ({ ...p, manufacturer: e.target.value }))} style={styles.input} autoFocus />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Model</label>
+                                <input type="text" placeholder="e.g., DM-NVX-363" value={customItem.model} onChange={e => setCustomItem(p => ({ ...p, model: e.target.value }))} style={styles.input} />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Part Number</label>
+                                <input type="text" placeholder="Optional" value={customItem.partNumber} onChange={e => setCustomItem(p => ({ ...p, partNumber: e.target.value }))} style={styles.input} />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Description</label>
+                                <input type="text" placeholder="e.g., AV over IP Encoder" value={customItem.description} onChange={e => setCustomItem(p => ({ ...p, description: e.target.value }))} style={styles.input} />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Category</label>
+                                <input type="text" placeholder="e.g., Switching" value={customItem.category} onChange={e => setCustomItem(p => ({ ...p, category: e.target.value }))} style={styles.input} list="custom-categories" />
+                                <datalist id="custom-categories">{[...new Set(catalog.map(c => c.category))].sort().map(c => <option key={c} value={c} />)}</datalist>
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Subcategory</label>
+                                <input type="text" placeholder="Optional" value={customItem.subcategory} onChange={e => setCustomItem(p => ({ ...p, subcategory: e.target.value }))} style={styles.input} list="custom-subcategories" />
+                                <datalist id="custom-subcategories">{[...new Set(catalog.map(c => c.subcategory).filter(Boolean))].sort().map(s => <option key={s} value={s} />)}</datalist>
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Unit Cost ($)</label>
+                                <input type="number" step="0.01" min="0" placeholder="0.00" value={customItem.unitCost} onChange={e => setCustomItem(p => ({ ...p, unitCost: e.target.value }))} onFocus={e => e.target.select()} style={styles.input} />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Labor Hours</label>
+                                <input type="number" step="0.25" min="0" placeholder="0.00" value={customItem.laborHrsPerUnit} onChange={e => setCustomItem(p => ({ ...p, laborHrsPerUnit: e.target.value }))} onFocus={e => e.target.select()} style={styles.input} />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#8b98a5' }}>Unit of Measure</label>
+                                <select value={customItem.uom} onChange={e => setCustomItem(p => ({ ...p, uom: e.target.value }))} style={styles.input}>
+                                    <option value="EA">EA (Each)</option>
+                                    <option value="FT">FT (Foot)</option>
+                                    <option value="LOT">LOT</option>
+                                    <option value="HR">HR (Hour)</option>
+                                    <option value="LS">LS (Lump Sum)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* Footer */}
                 <div style={{ marginTop: '16px', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <label style={{ fontSize: '14px', color: '#8b98a5' }}>Qty:</label>
-                    <input 
-                        type="number" 
-                        value={qty} 
-                        onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))} 
+                    <input
+                        type="number"
+                        value={qty}
+                        onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))}
                         onFocus={e => e.target.select()}
-                        style={{ ...styles.inputSmall, width: '70px' }} 
-                        min="1" 
+                        style={{ ...styles.inputSmall, width: '70px' }}
+                        min="1"
                     />
                     <div style={{ flex: 1 }} />
-                    <span style={{ fontSize: '12px', color: '#6e767d' }}>
-                        {tab === 'components' && selected.length > 0 && 'Press Enter to add • '}
-                        Ctrl+Click for multi-select
-                    </span>
+                    {tab === 'components' && <span style={{ fontSize: '12px', color: '#6e767d' }}>
+                        {selected.length > 0 && 'Press Enter to add • '}
+                        Ctrl+Click for multi-select • <kbd style={{ backgroundColor: '#2f3336', padding: '1px 5px', borderRadius: '3px', fontSize: '11px' }}>Ctrl+K</kbd> to open
+                    </span>}
                     <button style={styles.button('secondary')} onClick={onClose}>Cancel</button>
                     {tab === 'components' && (
-                        <button 
-                            style={{ ...styles.button('primary'), opacity: selected.length === 0 ? 0.5 : 1 }} 
-                            onClick={insert} 
+                        <button
+                            style={{ ...styles.button('primary'), opacity: selected.length === 0 ? 0.5 : 1 }}
+                            onClick={insert}
                             disabled={selected.length === 0}>
                             <Icons.Plus /> Add {selected.length > 0 ? `(${selected.length})` : ''}
+                        </button>
+                    )}
+                    {tab === 'custom' && (
+                        <button
+                            style={{ ...styles.button('success'), opacity: (!customItem.manufacturer && !customItem.model && !customItem.description) ? 0.5 : 1 }}
+                            onClick={() => {
+                                if (!customItem.manufacturer && !customItem.model && !customItem.description) return;
+                                const item = {
+                                    id: 'custom-' + Date.now(),
+                                    manufacturer: customItem.manufacturer || 'Custom',
+                                    model: customItem.model || '',
+                                    partNumber: customItem.partNumber || '',
+                                    description: customItem.description || '',
+                                    category: customItem.category || 'Custom',
+                                    subcategory: customItem.subcategory || '',
+                                    unitCost: parseFloat(customItem.unitCost) || 0,
+                                    laborHrsPerUnit: parseFloat(customItem.laborHrsPerUnit) || 0,
+                                    uom: customItem.uom || 'EA',
+                                    isCustom: true,
+                                };
+                                onInsert([item], qty);
+                                onClose();
+                            }}
+                            disabled={!customItem.manufacturer && !customItem.model && !customItem.description}>
+                            <Icons.Plus /> Add Custom Item
                         </button>
                     )}
                 </div>
@@ -2849,14 +2939,29 @@ function AllLocationsView({
     const [expandedItems, setExpandedItems] = useState({}); // { locationId: { itemIdx: bool } }
     const [expandedPackages, setExpandedPackages] = useState({}); // { locationId: { pkgName: bool } }
     const [contextMenu, setContextMenu] = useState(null);
-    
+
+    // Resizable columns
+    const ALL_LOC_COLUMNS = [
+        { id: 'checkbox', label: '', width: 40, fixed: true },
+        { id: 'expand', label: '', width: 30, fixed: true },
+        { id: 'qty', label: 'Qty', width: 60 },
+        { id: 'notes', label: 'Notes', width: 120 },
+        { id: 'manufacturer', label: 'Manufacturer', width: 120 },
+        { id: 'model', label: 'Model', width: 140 },
+        { id: 'description', label: 'Description', width: 200 },
+        { id: 'unitCost', label: 'Unit', width: 80 },
+        { id: 'extCost', label: 'Ext.', width: 90 },
+        { id: 'labor', label: 'Labor', width: 80 },
+    ];
+    const { columns: allLocCols, startResize: startAllLocResize } = useFlexibleColumns(ALL_LOC_COLUMNS);
+
     // Compact mode styles
     const compactStyles = {
         td: compactMode ? { padding: '4px 8px', fontSize: '11px' } : {},
         th: compactMode ? { padding: '6px 8px', fontSize: '10px' } : {},
         input: compactMode ? { padding: '2px 6px', fontSize: '11px' } : {},
     };
-    
+
     // Combined styles for easy use
     const tdStyle = { ...styles.td, ...compactStyles.td };
     const thStyle = { ...styles.th, ...compactStyles.th };
@@ -3183,22 +3288,25 @@ function AllLocationsView({
                                     <table style={styles.table}>
                                         <thead>
                                             <tr>
-                                                <th style={{ ...thStyle, width: '40px' }}>
-                                                    <input 
-                                                        type="checkbox" 
-                                                        checked={locationSelected.length === mainItemCount && mainItemCount > 0} 
-                                                        onChange={() => selectAllInLocation(location.id, mainItemCount)} 
-                                                    />
-                                                </th>
-                                                <th style={{ ...thStyle, width: '30px' }}></th>
-                                                <th style={thStyle}>Qty</th>
-                                                <th style={{ ...thStyle, minWidth: '100px' }}>Notes</th>
-                                                <th style={thStyle}>Manufacturer</th>
-                                                <th style={thStyle}>Model</th>
-                                                <th style={thStyle}>Description</th>
-                                                <th style={thStyle}>Unit</th>
-                                                <th style={thStyle}>Ext.</th>
-                                                <th style={thStyle}>Labor</th>
+                                                {allLocCols.map((col, colIndex) => (
+                                                    <th key={col.id} style={{ ...thStyle, ...styles.thResizable, width: col.width + 'px' }}>
+                                                        {col.id === 'checkbox' ? (
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={locationSelected.length === mainItemCount && mainItemCount > 0}
+                                                                onChange={() => selectAllInLocation(location.id, mainItemCount)}
+                                                            />
+                                                        ) : col.label}
+                                                        {!col.fixed && (
+                                                            <div
+                                                                style={styles.resizeHandle}
+                                                                onMouseDown={e => startAllLocResize(colIndex, e)}
+                                                                onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
+                                                                onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
+                                                            />
+                                                        )}
+                                                    </th>
+                                                ))}
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -4754,6 +4862,12 @@ function App() {
             if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
             if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
             if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); showToast('Project saved'); }
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+                if (!showSearch && activeProjectId && !showProjectsHome) {
+                    setShowSearch(true);
+                }
+            }
             if (e.key === 'Escape') {
                 // Close any open modals first
                 const hasOpenModal = showSearch || showAddLocation || showAddSublocation || showDuplicate || showDelete || showSavePackage || showSaveTemplate || showApplyTemplate;
@@ -4770,7 +4884,7 @@ function App() {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [historyIndex, history, clipboard, showSearch, showAddLocation, showAddSublocation, showDuplicate, showDelete, showSavePackage, showSaveTemplate, showApplyTemplate]);
+    }, [historyIndex, history, clipboard, showSearch, showAddLocation, showAddSublocation, showDuplicate, showDelete, showSavePackage, showSaveTemplate, showApplyTemplate, activeProjectId, showProjectsHome]);
 
     // Initialize expanded state when locations change
     useEffect(() => {
