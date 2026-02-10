@@ -4973,27 +4973,58 @@ function RevisionPromptModal({ project, onClose, onCreateRevision }) {
 function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [confirmDelete, setConfirmDelete] = useState(null);
-    
+    const [sortCol, setSortCol] = useState('updatedAt');
+    const [sortDir, setSortDir] = useState('desc');
+
+    const handleSort = (col) => {
+        if (sortCol === col) { setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }
+        else { setSortCol(col); setSortDir(col === 'name' || col === 'client' || col === 'projectNumber' ? 'asc' : 'desc'); }
+    };
+
+    const SortIcon = ({ col }) => {
+        if (sortCol !== col) return <span style={{ color: '#4a5568', marginLeft: '4px' }}>⇅</span>;
+        return <span style={{ color: '#1d9bf0', marginLeft: '4px' }}>{sortDir === 'asc' ? '↑' : '↓'}</span>;
+    };
+
     // Filter and search projects
     const filteredProjects = useMemo(() => {
-        return projects.filter(p => {
+        let result = projects.filter(p => {
             // Status filter
             if (filter === 'active' && (p.status === 'archived' || p.status === 'completed' || p.status === 'lost')) return false;
             if (filter === 'submitted' && p.status !== 'proposal-submitted') return false;
             if (filter === 'completed' && p.status !== 'completed') return false;
             if (filter === 'lost' && p.status !== 'lost') return false;
             if (filter === 'archived' && p.status !== 'archived') return false;
-            
+
             // Search
             if (searchTerm) {
                 const term = searchTerm.toLowerCase();
-                return p.name.toLowerCase().includes(term) || 
+                return p.name.toLowerCase().includes(term) ||
                        p.client?.toLowerCase().includes(term) ||
                        p.projectNumber?.toLowerCase().includes(term);
             }
             return true;
         });
-    }, [projects, filter, searchTerm]);
+
+        // Sort
+        const dir = sortDir === 'asc' ? 1 : -1;
+        result.sort((a, b) => {
+            let va, vb;
+            switch (sortCol) {
+                case 'name': va = (a.name || '').toLowerCase(); vb = (b.name || '').toLowerCase(); break;
+                case 'client': va = (a.client || '').toLowerCase(); vb = (b.client || '').toLowerCase(); break;
+                case 'projectNumber': va = (a.projectNumber || '').toLowerCase(); vb = (b.projectNumber || '').toLowerCase(); break;
+                case 'status': va = (a.status || ''); vb = (b.status || ''); break;
+                case 'material': { const ta = getProjectTotals(a); const tb = getProjectTotals(b); va = ta.cost; vb = tb.cost; break; }
+                case 'labor': { const ta = getProjectTotals(a); const tb = getProjectTotals(b); va = ta.labor; vb = tb.labor; break; }
+                case 'updatedAt': default: va = a.updatedAt || ''; vb = b.updatedAt || ''; break;
+            }
+            if (va < vb) return -1 * dir;
+            if (va > vb) return 1 * dir;
+            return 0;
+        });
+        return result;
+    }, [projects, filter, searchTerm, sortCol, sortDir]);
     
     // Close context menu on click outside
     useEffect(() => {
@@ -5092,14 +5123,23 @@ function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, t
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid #2f3336' }}>
-                                    <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Project</th>
-                                    <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Client</th>
-                                    <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Project #</th>
-                                    <th style={{ padding: '10px 12px', textAlign: 'center', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Status</th>
-                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Material</th>
-                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Labor</th>
-                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Items</th>
-                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Updated</th>
+                                    {[
+                                        { id: 'name', label: 'Project', align: 'left', pad: '10px 16px' },
+                                        { id: 'client', label: 'Client', align: 'left' },
+                                        { id: 'projectNumber', label: 'Project #', align: 'left' },
+                                        { id: 'status', label: 'Status', align: 'center' },
+                                        { id: 'material', label: 'Material', align: 'right' },
+                                        { id: 'labor', label: 'Labor', align: 'right' },
+                                        { id: 'updatedAt', label: 'Last Updated', align: 'left' },
+                                    ].map(col => (
+                                        <th
+                                            key={col.id}
+                                            style={{ padding: col.pad || '10px 12px', textAlign: col.align, fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                                            onClick={() => handleSort(col.id)}
+                                        >
+                                            {col.label}<SortIcon col={col.id} />
+                                        </th>
+                                    ))}
                                     <th style={{ padding: '10px 12px', width: '40px' }}></th>
                                 </tr>
                             </thead>
@@ -5108,6 +5148,7 @@ function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, t
                                     const totals = getProjectTotals(project);
                                     const status = PROJECT_STATUSES[project.status] || PROJECT_STATUSES.developing;
                                     const checkout = checkouts[project.id];
+                                    const updDate = project.updatedAt ? new Date(project.updatedAt) : null;
                                     return (
                                         <tr
                                             key={project.id}
@@ -5132,8 +5173,10 @@ function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, t
                                             </td>
                                             <td style={{ padding: '12px 12px', textAlign: 'right', color: '#00ba7c', fontWeight: '600', fontSize: '13px' }}>{fmtCost(totals.cost)}</td>
                                             <td style={{ padding: '12px 12px', textAlign: 'right', color: '#1d9bf0', fontWeight: '600', fontSize: '13px' }}>{fmtHrs(totals.labor)}</td>
-                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#e7e9ea', fontSize: '13px' }}>{totals.items}</td>
-                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#6e767d', fontSize: '12px', whiteSpace: 'nowrap' }}>{new Date(project.updatedAt).toLocaleDateString()}</td>
+                                            <td style={{ padding: '12px 12px' }}>
+                                                <div style={{ color: '#e7e9ea', fontSize: '12px', whiteSpace: 'nowrap' }}>{updDate ? updDate.toLocaleDateString() + ' ' + updDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</div>
+                                                {project.updatedBy && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '1px' }}>{project.updatedBy}</div>}
+                                            </td>
                                             <td style={{ padding: '12px 8px', textAlign: 'center' }}>
                                                 <button
                                                     style={{ ...styles.iconButton, color: '#6e767d', padding: '4px' }}
@@ -5856,7 +5899,7 @@ function App() {
         setProjects(prev => prev.map(p => {
             if (p.id === activeProjectId) {
                 const newProject = typeof updater === 'function' ? updater(p) : updater;
-                return { ...newProject, updatedAt: new Date().toISOString() };
+                return { ...newProject, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' };
             }
             return p;
         }));
@@ -6047,15 +6090,15 @@ function App() {
     
     // Update project status
     const updateProjectStatus = (projectId, status) => {
-        setProjects(prev => prev.map(p => 
-            p.id === projectId ? { ...p, status, updatedAt: new Date().toISOString() } : p
+        setProjects(prev => prev.map(p =>
+            p.id === projectId ? { ...p, status, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
         ));
     };
-    
+
     // Save project (for editing)
     const saveProject = (updatedProject) => {
-        setProjects(prev => prev.map(p => 
-            p.id === updatedProject.id ? updatedProject : p
+        setProjects(prev => prev.map(p =>
+            p.id === updatedProject.id ? { ...updatedProject, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
         ));
         showToast('Project updated');
     };
