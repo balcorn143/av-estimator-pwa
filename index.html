@@ -2155,7 +2155,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
     };
     
     // Render a cell based on column ID for main items
-    const renderItemCell = (col, item, itemIdx, { isSelected, hasAccessories, isExpanded, itemTotal, isPackageItem, pkgColor, changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand }) => {
+    const renderItemCell = (col, item, itemIdx, { isSelected, hasAccessories, isExpanded, itemTotal, isPackageItem, pkgColor, changeQty, changeNotes, changeSystem, changeUnitCost, changeUnitLabor, toggleSelect, toggleItemExpand }) => {
         const tdStyle = { ...styles.td, ...compactStyles.td };
         const inputStyle = { ...styles.inputSmall, ...compactStyles.input };
         switch (col.id) {
@@ -2180,9 +2180,9 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
             case 'description':
                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{item.description}{hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}</td>;
             case 'unitCost':
-                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{fmtCost(item.unitCost)}</td>;
+                return <td key={col.id} style={tdStyle}><input type="number" step="0.01" min="0" value={item.unitCost || 0} onChange={e => changeUnitCost(itemIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right' }} /></td>;
             case 'unitLabor':
-                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{fmtHrs(item.laborHrsPerUnit)}</td>;
+                return <td key={col.id} style={tdStyle}><input type="number" step="0.25" min="0" value={item.laborHrsPerUnit || 0} onChange={e => changeUnitLabor(itemIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '55px' : '65px', textAlign: 'right' }} /></td>;
             case 'extCost':
                 return <td key={col.id} style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: compactMode ? '11px' : '12px' }}>{fmtCost(itemTotal.cost)}</td>;
             case 'extLabor':
@@ -2193,7 +2193,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
     };
     
     // Render a cell for accessories
-    const renderAccessoryCell = (col, acc, itemIdx, accIdx, { pkgColor, changeAccessoryQty, changeAccessoryNotes, removeAccessory }) => {
+    const renderAccessoryCell = (col, acc, itemIdx, accIdx, { pkgColor, changeAccessoryQty, changeAccessoryNotes, changeAccessoryUnitCost, changeAccessoryUnitLabor, removeAccessory }) => {
         const tdStyle = { ...styles.td, ...compactStyles.td, fontSize: compactMode ? '10px' : '11px', color: '#6e767d' };
         const inputStyle = { ...styles.inputSmall, ...compactStyles.input };
         switch (col.id) {
@@ -2214,9 +2214,9 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
             case 'description':
                 return <td key={col.id} style={tdStyle}>{acc.description}</td>;
             case 'unitCost':
-                return <td key={col.id} style={tdStyle}>{fmtCost(acc.unitCost)}</td>;
+                return <td key={col.id} style={tdStyle}><input type="number" step="0.01" min="0" value={acc.unitCost || 0} onChange={e => changeAccessoryUnitCost(itemIdx, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             case 'unitLabor':
-                return <td key={col.id} style={tdStyle}>{fmtHrs(acc.laborHrsPerUnit)}</td>;
+                return <td key={col.id} style={tdStyle}><input type="number" step="0.25" min="0" value={acc.laborHrsPerUnit || 0} onChange={e => changeAccessoryUnitLabor(itemIdx, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '55px' : '65px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             case 'extCost':
                 return <td key={col.id} style={{ ...tdStyle, color: '#4a6e4a' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>;
             case 'extLabor':
@@ -2363,6 +2363,34 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
     const changeSystem = (itemIdx, system) => {
         const items = [...location.items];
         items[itemIdx] = { ...items[itemIdx], system };
+        onUpdate(location.id, items);
+    };
+
+    const changeUnitCost = (itemIdx, val) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], unitCost: parseFloat(val) || 0 };
+        onUpdate(location.id, items);
+    };
+
+    const changeUnitLabor = (itemIdx, val) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], laborHrsPerUnit: parseFloat(val) || 0 };
+        onUpdate(location.id, items);
+    };
+
+    const changeAccessoryUnitCost = (itemIdx, accIdx, val) => {
+        const items = [...location.items];
+        const accessories = [...items[itemIdx].accessories];
+        accessories[accIdx] = { ...accessories[accIdx], unitCost: parseFloat(val) || 0 };
+        items[itemIdx] = { ...items[itemIdx], accessories };
+        onUpdate(location.id, items);
+    };
+
+    const changeAccessoryUnitLabor = (itemIdx, accIdx, val) => {
+        const items = [...location.items];
+        const accessories = [...items[itemIdx].accessories];
+        accessories[accIdx] = { ...accessories[accIdx], laborHrsPerUnit: parseFloat(val) || 0 };
+        items[itemIdx] = { ...items[itemIdx], accessories };
         onUpdate(location.id, items);
     };
 
@@ -2738,7 +2766,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                                         {columns.map(col => renderItemCell(col, item, i, {
                                                             isSelected: isItemSelected, hasAccessories: item.accessories?.length > 0, isExpanded: expandedItems[i] !== false, itemTotal,
                                                             isPackageItem: true, pkgColor,
-                                                            changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand
+                                                            changeQty, changeNotes, changeSystem, changeUnitCost, changeUnitLabor, toggleSelect, toggleItemExpand
                                                         }))}
                                                     </tr>
                                                 );
@@ -2773,7 +2801,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                                     key={`${i}-acc-${accIdx}`} 
                                                     style={{ backgroundColor: '#0d1117', cursor: 'context-menu' }}
                                                     onContextMenu={e => handleContextMenu(e, i, true, accIdx)}>
-                                                    {columns.map(col => renderAccessoryCell(col, acc, i, accIdx, { pkgColor: null, changeAccessoryQty, changeAccessoryNotes, removeAccessory }))}
+                                                    {columns.map(col => renderAccessoryCell(col, acc, i, accIdx, { pkgColor: null, changeAccessoryQty, changeAccessoryNotes, changeAccessoryUnitCost, changeAccessoryUnitLabor, removeAccessory }))}
                                                 </tr>
                                             ))}
                                         </React.Fragment>
