@@ -2033,7 +2033,7 @@ function useFlexibleColumns(initialColumns) {
         const onMouseMove = (e) => {
             if (resizing.current) {
                 const diff = e.clientX - resizing.current.startX;
-                const newWidth = Math.max(40, resizing.current.startWidth + diff);
+                const newWidth = Math.min(800, Math.max(40, resizing.current.startWidth + diff));
                 setColumns(prev => {
                     const next = [...prev];
                     next[resizing.current.colIndex] = { ...next[resizing.current.colIndex], width: newWidth };
@@ -4903,6 +4903,7 @@ function EditProjectModal({ project, onClose, onSave }) {
                                         <span style={{ fontWeight: '600', color: rev.id === project.currentRevision ? '#f59e0b' : '#e7e9ea' }}>{rev.label}</span>
                                         <span style={{ color: '#6e767d', fontSize: '11px' }}>{new Date(rev.createdAt).toLocaleDateString()}</span>
                                     </div>
+                                    {rev.createdBy && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '1px' }}>by {rev.createdBy}</div>}
                                     {rev.notes && <div style={{ color: '#8b98a5', fontSize: '12px', marginTop: '2px' }}>{rev.notes}</div>}
                                 </div>
                             ))}
@@ -4969,7 +4970,7 @@ function RevisionPromptModal({ project, onClose, onCreateRevision }) {
     );
 }
 
-function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, team, onEdit, onDuplicate, onDelete, onUpdateStatus, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout }) {
+function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [confirmDelete, setConfirmDelete] = useState(null);
     
@@ -5111,6 +5112,11 @@ function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, t
                                         <div style={{ flex: 1, minWidth: 0 }}>
                                             <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', fontWeight: '600', color: '#e7e9ea', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name}</h3>
                                             {project.client && <div style={{ fontSize: '13px', color: '#8b98a5' }}>{project.client}</div>}
+                                            {checkouts[project.id] && (
+                                                <div style={{ fontSize: '11px', color: checkouts[project.id].userId === session?.user?.id ? '#00ba7c' : '#f59e0b', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                    <Icons.Lock /> {checkouts[project.id].userId === session?.user?.id ? 'Checked out by you' : `Checked out by ${checkouts[project.id].email}`}
+                                                </div>
+                                            )}
                                         </div>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, marginLeft: '12px' }}>
                                             <button 
@@ -5325,11 +5331,16 @@ function TeamModal({ team, session, onClose, onTeamUpdate }) {
     // Load members when viewing team
     useEffect(() => {
         if (team && supabase) {
-            supabase.from('team_members')
-                .select('user_id, role, joined_at')
-                .eq('team_id', team.id)
-                .then(({ data }) => {
+            supabase.rpc('get_team_members', { p_team_id: team.id })
+                .then(({ data, error }) => {
                     if (data) setMembers(data);
+                    else if (error) {
+                        // Fallback to basic query without emails
+                        supabase.from('team_members')
+                            .select('user_id, role, joined_at')
+                            .eq('team_id', team.id)
+                            .then(({ data }) => { if (data) setMembers(data); });
+                    }
                 });
         }
     }, [team]);
@@ -5472,7 +5483,7 @@ function TeamModal({ team, session, onClose, onTeamUpdate }) {
                             <label style={{ display: 'block', fontSize: '12px', color: '#8b98a5', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Members ({members.length})</label>
                             {members.map(m => (
                                 <div key={m.user_id} style={{ padding: '8px 12px', backgroundColor: '#1a1f26', borderRadius: '6px', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                    <span style={{ fontSize: '13px', color: '#e7e9ea' }}>{m.user_id === session.user.id ? `${session.user.email} (you)` : m.user_id.slice(0, 8) + '...'}</span>
+                                    <span style={{ fontSize: '13px', color: '#e7e9ea' }}>{m.user_id === session.user.id ? `${session.user.email} (you)` : (m.email || m.user_id.slice(0, 8) + '...')}</span>
                                     <span style={{ ...styles.badge(m.role === 'owner' ? 'blue' : 'green'), fontSize: '10px' }}>{m.role}</span>
                                 </div>
                             ))}
@@ -5809,7 +5820,7 @@ function App() {
     ]);
 
     // Report state
-    const [showLaborByPhase, setShowLaborByPhase] = useState(false);
+    const [showLaborByPhase, setShowLaborByPhase] = useState(true);
     const [reportHierarchyDepth, setReportHierarchyDepth] = useState(-1);
 
     // History for undo/redo
@@ -5841,6 +5852,10 @@ function App() {
     };
 
     const setProject = (updater) => {
+        if (projectReadOnly) {
+            showToast('Project is read-only — checked out by ' + (checkedOutBy || 'another user'));
+            return;
+        }
         const currentProject = projects.find(p => p.id === activeProjectId);
         if (currentProject && requiresRevision(currentProject)) {
             setPendingMutation(() => () => setProjectDirect(updater));
@@ -5857,6 +5872,7 @@ function App() {
             label,
             notes,
             createdAt: new Date().toISOString(),
+            createdBy: session?.user?.email || 'unknown',
         };
         // First, add the revision to the project and set it as current
         setProjectDirect(p => ({
@@ -5864,6 +5880,22 @@ function App() {
             revisions: [...(p.revisions || []), revision],
             currentRevision: revision.id,
         }));
+
+        // Log to Supabase for team changelog
+        if (supabase && session && team && activeProjectId) {
+            const revisionNumber = (project?.revisions?.length || 0) + 1;
+            supabase.from('project_revisions').insert({
+                project_id: activeProjectId,
+                team_id: team.id,
+                user_id: session.user.id,
+                user_email: session.user.email,
+                revision_number: revisionNumber,
+                note: `${label}${notes ? ': ' + notes : ''}`,
+            }).then(({ error }) => {
+                if (error) console.error('Revision log error:', error);
+            });
+        }
+
         // Then execute the pending mutation
         if (pendingMutation) {
             setTimeout(() => {
@@ -5899,19 +5931,76 @@ function App() {
     };
     
     // Open a project
-    const openProject = (projectId) => {
+    const [projectReadOnly, setProjectReadOnly] = useState(false);
+    const [checkedOutBy, setCheckedOutBy] = useState(null);
+    const [checkouts, setCheckouts] = useState({}); // { projectId: { email, userId } }
+
+    // Fetch checkout status for all projects (when on dashboard)
+    useEffect(() => {
+        if (!supabase || !session || !team || !showProjectsHome) return;
+        const fetchCheckouts = async () => {
+            const { data } = await supabase
+                .from('projects')
+                .select('id, checked_out_by, checked_out_email')
+                .eq('team_id', team.id)
+                .not('checked_out_by', 'is', null);
+            if (data) {
+                const map = {};
+                data.forEach(p => { map[p.id] = { email: p.checked_out_email, userId: p.checked_out_by }; });
+                setCheckouts(map);
+            }
+        };
+        fetchCheckouts();
+    }, [showProjectsHome, session, team]);
+
+    const openProject = async (projectId) => {
+        setProjectReadOnly(false);
+        setCheckedOutBy(null);
+
+        // Attempt checkout if on a team
+        if (supabase && session && team) {
+            try {
+                const { data: success } = await supabase.rpc('checkout_project', {
+                    p_project_id: projectId,
+                    p_email: session.user.email
+                });
+                if (success === false) {
+                    // Someone else has it checked out — open read-only
+                    const { data: projRow } = await supabase
+                        .from('projects')
+                        .select('checked_out_email, checked_out_by')
+                        .eq('id', projectId)
+                        .single();
+                    setProjectReadOnly(true);
+                    setCheckedOutBy(projRow?.checked_out_email || 'another user');
+                }
+            } catch (e) {
+                console.error('Checkout error:', e);
+            }
+        }
+
         setActiveProjectId(projectId);
         setShowProjectsHome(false);
         setSelected(null);
         setHistory([]);
         setHistoryIndex(-1);
     };
-    
+
     // Close current project and return to home
-    const closeProject = () => {
+    const closeProject = async () => {
+        // Check in the project
+        if (supabase && session && activeProjectId && !projectReadOnly) {
+            try {
+                await supabase.rpc('checkin_project', { p_project_id: activeProjectId });
+            } catch (e) {
+                console.error('Checkin error:', e);
+            }
+        }
         setActiveProjectId(null);
         setShowProjectsHome(true);
         setSelected(null);
+        setProjectReadOnly(false);
+        setCheckedOutBy(null);
     };
     
     // Duplicate a project
@@ -7077,6 +7166,7 @@ function App() {
                     onOpenCatalog={() => setShowDashboardCatalog(true)}
                     onOpenTeam={() => setShowTeamModal(true)}
                     team={team}
+                    checkouts={checkouts}
                     onEdit={(project) => setEditingProject(project)}
                     onDuplicate={duplicateProject}
                     onDelete={deleteProject}
@@ -7133,6 +7223,11 @@ function App() {
                         <Icons.ChevronLeft />
                     </button>
                     <div style={styles.logo}><Icons.Zap /> {project.name}</div>
+                    {projectReadOnly && (
+                        <span style={{ ...styles.badge(''), backgroundColor: '#3d1a1a', color: '#f87171', fontSize: '11px' }}>
+                            <Icons.Lock /> Read-Only — checked out by {checkedOutBy}
+                        </span>
+                    )}
                     {project.client && <span style={{ color: '#6e767d', fontSize: '14px' }}>• {project.client}</span>}
                     {project.status && (
                         <span style={{ ...styles.badge(''), backgroundColor: PROJECT_STATUSES[project.status]?.bg, color: PROJECT_STATUSES[project.status]?.color }}>
