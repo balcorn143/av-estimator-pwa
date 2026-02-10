@@ -3537,6 +3537,7 @@ function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGrou
 }
 
 const CATALOG_COLUMNS = [
+    { id: 'checkbox', label: '', width: 36, fixed: true },
     { id: 'favorite', label: '\u2605', width: 40 },
     { id: 'manufacturer', label: 'Manufacturer', width: 130 },
     { id: 'model', label: 'Model', width: 120 },
@@ -3563,6 +3564,13 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
     const [sortField, setSortField] = useState('manufacturer');
     const [sortDir, setSortDir] = useState('asc');
     const [editMode, setEditMode] = useState(false);
+
+    // Multi-select
+    const [selectedIds, setSelectedIds] = useState(new Set());
+    const lastClickedRef = useRef(null);
+    const [contextMenu, setContextMenu] = useState(null); // { x, y }
+    const [bulkEditField, setBulkEditField] = useState(null); // field key to edit
+    const [bulkEditValue, setBulkEditValue] = useState('');
 
     const { columns: catalogCols, startResize: startCatResize } = useFlexibleColumns(CATALOG_COLUMNS);
 
@@ -3638,6 +3646,91 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
         setConfirmDelete(null);
     };
     
+    // Multi-select toggle with shift-click range support
+    const toggleSelect = (itemId, e) => {
+        if (e?.shiftKey && lastClickedRef.current) {
+            const idxA = filtered.findIndex(c => c.id === lastClickedRef.current);
+            const idxB = filtered.findIndex(c => c.id === itemId);
+            if (idxA !== -1 && idxB !== -1) {
+                const start = Math.min(idxA, idxB);
+                const end = Math.max(idxA, idxB);
+                setSelectedIds(prev => {
+                    const next = new Set(prev);
+                    for (let i = start; i <= end; i++) next.add(filtered[i].id);
+                    return next;
+                });
+            }
+        } else {
+            setSelectedIds(prev => {
+                const next = new Set(prev);
+                if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+                return next;
+            });
+        }
+        lastClickedRef.current = itemId;
+    };
+
+    const selectAll = () => {
+        const visibleIds = filtered.slice(0, 200).map(c => c.id);
+        const allSelected = visibleIds.every(id => selectedIds.has(id));
+        if (allSelected) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(visibleIds));
+        }
+    };
+
+    // Right-click context menu
+    const handleContextMenu = (e) => {
+        if (selectedIds.size === 0) return;
+        e.preventDefault();
+        setContextMenu({ x: e.clientX, y: e.clientY });
+    };
+
+    // Close context menu on click outside
+    useEffect(() => {
+        const close = () => setContextMenu(null);
+        if (contextMenu) window.addEventListener('click', close);
+        return () => window.removeEventListener('click', close);
+    }, [contextMenu]);
+
+    // Bulk edit field definitions
+    const BULK_FIELDS = [
+        { key: 'category', label: 'Category', type: 'text' },
+        { key: 'subcategory', label: 'Subcategory', type: 'text' },
+        { key: 'unitCost', label: 'Unit Cost', type: 'number' },
+        { key: 'laborHrsPerUnit', label: 'Labor Hours', type: 'number' },
+        { key: 'uom', label: 'UOM', type: 'select', options: UOM_OPTIONS },
+        { key: 'vendor', label: 'Vendor', type: 'text' },
+        { key: 'phase', label: 'Phase', type: 'select', options: ['', ...PHASE_OPTIONS.map(p => p.label)] },
+        { key: 'discontinued', label: 'Discontinued', type: 'boolean' },
+    ];
+
+    const applyBulkEdit = () => {
+        if (!bulkEditField) return;
+        const field = BULK_FIELDS.find(f => f.key === bulkEditField);
+        if (!field) return;
+        let val = bulkEditValue;
+        if (field.type === 'number') val = parseFloat(val) || 0;
+        if (field.type === 'boolean') val = val === 'true' || val === true;
+        const now = new Date().toISOString();
+        onUpdateCatalog(catalog.map(c =>
+            selectedIds.has(c.id) ? { ...c, [bulkEditField]: val, modifiedAt: now } : c
+        ));
+        setBulkEditField(null);
+        setBulkEditValue('');
+    };
+
+    // Bulk delete
+    const bulkDelete = () => {
+        const now = new Date().toISOString();
+        onUpdateCatalog(catalog.map(c =>
+            selectedIds.has(c.id) ? { ...c, deleted: true, modifiedAt: now } : c
+        ));
+        setSelectedIds(new Set());
+        setContextMenu(null);
+    };
+
     const SortIcon = ({ field }) => {
         if (sortField !== field) return null;
         return sortDir === 'asc' ? <Icons.ChevronUp /> : <Icons.ChevronDown />;
@@ -3715,9 +3808,9 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
                                     <th
                                         key={col.id}
                                         style={{ ...thStyle, cursor: col.fixed ? 'default' : 'pointer' }}
-                                        onClick={() => !col.fixed && handleSort(col.id)}
+                                        onClick={() => col.id === 'checkbox' ? selectAll() : (!col.fixed && handleSort(col.id))}
                                     >
-                                        {col.label} {!col.fixed && <SortIcon field={col.id} />}
+                                        {col.id === 'checkbox' ? <input type="checkbox" checked={filtered.slice(0, 200).length > 0 && filtered.slice(0, 200).every(c => selectedIds.has(c.id))} onChange={selectAll} /> : col.label} {col.id !== 'checkbox' && !col.fixed && <SortIcon field={col.id} />}
                                         <div
                                             style={styles.resizeHandle}
                                             onMouseDown={e => startCatResize(colIndex, e)}
@@ -3730,10 +3823,12 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
                         </thead>
                         <tbody>
                             {filtered.slice(0, 200).map(item => (
-                                <tr key={item.id} style={{ opacity: item.discontinued ? 0.5 : 1 }}>
+                                <tr key={item.id} style={{ opacity: item.discontinued ? 0.5 : 1, backgroundColor: selectedIds.has(item.id) ? '#1d3a5c' : undefined }} onContextMenu={e => { if (selectedIds.has(item.id)) handleContextMenu(e); }}>
                                     {catalogCols.map(col => {
                                         const inlineInput = { ...styles.inputSmall, width: '100%', padding: '2px 4px', fontSize: compactMode ? '10px' : '11px' };
                                         switch (col.id) {
+                                            case 'checkbox':
+                                                return <td key={col.id} style={{ ...tdStyle, textAlign: 'center' }}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={e => toggleSelect(item.id, e)} /></td>;
                                             case 'favorite':
                                                 return <td key={col.id} style={{ ...tdStyle, textAlign: 'center', cursor: 'pointer', color: item.favorite ? '#f59e0b' : '#4a5568' }} onClick={() => updateCatalogField(item.id, 'favorite', !item.favorite)}><Icons.Star filled={!!item.favorite} /></td>;
                                             case 'manufacturer':
@@ -3806,6 +3901,74 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
                     </div>
                 </div>
             )}
+
+            {/* Selection count bar */}
+            {selectedIds.size > 0 && (
+                <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#1d3a5c', border: '1px solid #1d9bf0', borderRadius: '10px', padding: '10px 20px', display: 'flex', alignItems: 'center', gap: '16px', zIndex: 1000, boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+                    <span style={{ fontWeight: '600', color: '#1d9bf0' }}>{selectedIds.size} selected</span>
+                    <span style={{ color: '#6e767d', fontSize: '12px' }}>Right-click for bulk edit</span>
+                    <button style={{ ...styles.smallButton, backgroundColor: '#2f3336', color: '#8b98a5' }} onClick={() => setSelectedIds(new Set())}>Clear</button>
+                </div>
+            )}
+
+            {/* Context menu */}
+            {contextMenu && (
+                <div style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, backgroundColor: '#1a1f26', border: '1px solid #2f3336', borderRadius: '8px', padding: '4px 0', zIndex: 2000, boxShadow: '0 8px 24px rgba(0,0,0,0.6)', minWidth: '200px' }} onClick={e => e.stopPropagation()}>
+                    <div style={{ padding: '6px 12px', fontSize: '11px', color: '#6e767d', borderBottom: '1px solid #2f3336', marginBottom: '2px' }}>Bulk Update {selectedIds.size} Items</div>
+                    {BULK_FIELDS.map(f => (
+                        <div key={f.key} style={{ padding: '8px 16px', cursor: 'pointer', color: '#e7e9ea', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                            onClick={() => { setBulkEditField(f.key); setBulkEditValue(f.type === 'boolean' ? 'true' : ''); setContextMenu(null); }}
+                        >
+                            Set {f.label}
+                        </div>
+                    ))}
+                    <div style={{ borderTop: '1px solid #2f3336', marginTop: '2px' }}></div>
+                    <div style={{ padding: '8px 16px', cursor: 'pointer', color: '#f87171', fontSize: '13px' }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                        onClick={bulkDelete}
+                    >
+                        <Icons.Trash /> Delete {selectedIds.size} Items
+                    </div>
+                </div>
+            )}
+
+            {/* Bulk Edit Modal */}
+            {bulkEditField && (() => {
+                const field = BULK_FIELDS.find(f => f.key === bulkEditField);
+                if (!field) return null;
+                return (
+                    <div style={styles.modal} onClick={() => setBulkEditField(null)}>
+                        <div style={{ ...styles.modalContent, width: '420px' }} onClick={e => e.stopPropagation()}>
+                            <h2 style={{ margin: '0 0 16px 0', fontSize: '18px' }}>Set {field.label} for {selectedIds.size} Items</h2>
+                            {field.type === 'text' && (
+                                <input type="text" value={bulkEditValue} onChange={e => setBulkEditValue(e.target.value)} placeholder={`Enter ${field.label}...`} style={styles.input} autoFocus />
+                            )}
+                            {field.type === 'number' && (
+                                <input type="number" step={field.key === 'unitCost' ? '0.01' : '0.25'} min="0" value={bulkEditValue} onChange={e => setBulkEditValue(e.target.value)} placeholder="0" style={styles.input} autoFocus />
+                            )}
+                            {field.type === 'select' && (
+                                <select value={bulkEditValue} onChange={e => setBulkEditValue(e.target.value)} style={{ ...styles.input, cursor: 'pointer' }} autoFocus>
+                                    {field.key === 'phase' && <option value="">— None —</option>}
+                                    {field.options.map(o => <option key={o} value={o}>{o || '— None —'}</option>)}
+                                </select>
+                            )}
+                            {field.type === 'boolean' && (
+                                <select value={bulkEditValue} onChange={e => setBulkEditValue(e.target.value)} style={{ ...styles.input, cursor: 'pointer' }} autoFocus>
+                                    <option value="true">Yes — Mark as Discontinued</option>
+                                    <option value="false">No — Mark as Active</option>
+                                </select>
+                            )}
+                            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
+                                <button style={styles.button('secondary')} onClick={() => setBulkEditField(null)}>Cancel</button>
+                                <button style={styles.button('primary')} onClick={applyBulkEdit}>Apply to {selectedIds.size} Items</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }
