@@ -6134,8 +6134,24 @@ function App() {
                             .select('*')
                             .eq('team_id', team.id)
                             .limit(5000);
-                        data = applyCatalogCustomizations(data, customizations);
+                        if (customizations?.length > 0) {
+                            data = applyCatalogCustomizations(data, customizations);
+                        }
                     } catch (e) { console.log('Failed to load customizations during refresh'); }
+                }
+                // Re-apply local edits/deletions that haven't been synced to Supabase
+                const localEdits = {};
+                catalog.forEach(c => {
+                    if (c.deleted || c.modifiedAt || c.favorite || c.catalogNote) {
+                        localEdits[c.id] = c;
+                    }
+                });
+                if (Object.keys(localEdits).length > 0) {
+                    data = data.map(item => {
+                        const local = localEdits[item.id];
+                        if (local) return { ...item, ...local };
+                        return item;
+                    });
                 }
                 setCatalog(data);
                 localStorage.setItem('av-estimator-catalog', JSON.stringify(data));
