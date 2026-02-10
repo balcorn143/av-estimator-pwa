@@ -1613,8 +1613,8 @@ function DuplicateModal({ location, onClose, onDuplicate }) {
     return (
         <div style={styles.modal} onClick={onClose}>
             <div style={{ ...styles.modalContent, width: '550px' }} onClick={e => e.stopPropagation()}>
-                <h2 style={{ margin: '0 0 8px 0', fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '10px' }}><Icons.Duplicate /> Duplicate Structure</h2>
-                <p style={{ color: '#8b98a5', fontSize: '14px', marginBottom: '16px' }}>Create copies of <strong style={{ color: '#e7e9ea' }}>"{location.name}"</strong> with its {subCount} sublocation{subCount !== 1 ? 's' : ''}{itemCount > 0 ? ` and ${itemCount} component${itemCount !== 1 ? 's' : ''}` : ''}.</p>
+                <h2 style={{ margin: '0 0 8px 0', fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '10px' }}><Icons.Duplicate /> Duplicate Location</h2>
+                <p style={{ color: '#8b98a5', fontSize: '14px', marginBottom: '16px' }}>Create copies of <strong style={{ color: '#e7e9ea' }}>"{location.name}"</strong>{subCount > 0 ? ` with its ${subCount} sublocation${subCount !== 1 ? 's' : ''}` : ''}{itemCount > 0 ? ` and ${itemCount} component${itemCount !== 1 ? 's' : ''}` : ''}.</p>
                 
                 {itemCount > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', padding: '12px', backgroundColor: '#161b22', borderRadius: '8px', border: '1px solid #2f3336' }}>
@@ -5660,21 +5660,43 @@ function App() {
     const [catalogConflicts, setCatalogConflicts] = useState(null);
     const [packages, setPackages] = useState([]);
     
-    // Load catalog and packages on mount
+    // Load catalog and packages on mount, and reload when team changes
     useEffect(() => {
         loadCatalogData();
         loadPackagesData();
-    }, []);
+    }, [team]);
     
+    // Helper to apply team customizations (edits, deletions, favorites, notes) to base catalog
+    const applyCatalogCustomizations = (baseCatalog, customizations) => {
+        if (!customizations?.length) return baseCatalog;
+        const customMap = {};
+        customizations.forEach(c => { customMap[c.catalog_item_id] = c; });
+        return baseCatalog.map(item => {
+            const custom = customMap[item.id];
+            if (custom) {
+                let merged = { ...item, favorite: custom.favorite, catalogNote: custom.catalog_note, deleted: !!custom.deleted };
+                if (custom.custom_fields) {
+                    try {
+                        const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
+                        merged = { ...merged, ...fields };
+                    } catch (e) { console.error('Failed to parse custom_fields', e); }
+                }
+                return merged;
+            }
+            return item;
+        });
+    };
+
     const loadCatalogData = async () => {
         setCatalogSyncStatus('syncing');
+        let baseCatalog = null;
 
-        // Try Supabase first
+        // Try Supabase catalog table first
         if (supabase && session) {
             try {
                 const { data, error } = await supabase.from('catalog').select('*');
                 if (!error && data?.length > 0) {
-                    const mapped = data.map(row => ({
+                    baseCatalog = data.map(row => ({
                         id: row.id,
                         manufacturer: row.manufacturer || '',
                         model: row.model || '',
@@ -5688,10 +5710,6 @@ function App() {
                         vendor: row.vendor || '',
                         discontinued: !!row.discontinued,
                     }));
-                    setCatalog(mapped);
-                    localStorage.setItem('av-estimator-catalog', JSON.stringify(mapped));
-                    setCatalogSyncStatus('synced');
-                    return;
                 }
             } catch (e) {
                 console.log('Failed to fetch Supabase catalog, trying file');
@@ -5699,32 +5717,44 @@ function App() {
         }
 
         // Fall back to file fetch
-        try {
-            const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-            if (response.ok) {
-                const data = await response.json();
-                setCatalog(data);
-                localStorage.setItem('av-estimator-catalog', JSON.stringify(data));
-                setCatalogSyncStatus('synced');
-                return;
+        if (!baseCatalog) {
+            try {
+                const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
+                if (response.ok) {
+                    baseCatalog = await response.json();
+                }
+            } catch (e) {
+                console.log('Failed to fetch remote catalog, using local');
             }
-        } catch (e) {
-            console.log('Failed to fetch remote catalog, using local');
         }
 
         // Fall back to localStorage
-        const saved = localStorage.getItem('av-estimator-catalog');
-        if (saved) {
-            try {
-                setCatalog(JSON.parse(saved));
-                setCatalogSyncStatus('local');
-                return;
-            } catch (e) {}
+        if (!baseCatalog) {
+            const saved = localStorage.getItem('av-estimator-catalog');
+            if (saved) {
+                try { baseCatalog = JSON.parse(saved); } catch (e) {}
+            }
         }
 
         // Fall back to defaults
-        setCatalog(DEFAULT_CATALOG);
-        setCatalogSyncStatus('local');
+        if (!baseCatalog) baseCatalog = DEFAULT_CATALOG;
+
+        // Apply team customizations (edits, deletions, favorites, notes) on top of base catalog
+        if (supabase && session && team) {
+            try {
+                const { data: customizations } = await supabase
+                    .from('catalog_customizations')
+                    .select('*')
+                    .eq('team_id', team.id);
+                baseCatalog = applyCatalogCustomizations(baseCatalog, customizations);
+            } catch (e) {
+                console.log('Failed to load catalog customizations');
+            }
+        }
+
+        setCatalog(baseCatalog);
+        localStorage.setItem('av-estimator-catalog', JSON.stringify(baseCatalog));
+        setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
     };
     
     const loadPackagesData = async () => {
@@ -5753,17 +5783,27 @@ function App() {
         setPackages([]);
     };
     
-    // Refresh catalog from remote
+    // Refresh catalog from remote (re-applies team customizations on top)
     const refreshCatalog = async () => {
         setCatalogSyncStatus('syncing');
         try {
             const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
             if (response.ok) {
-                const data = await response.json();
+                let data = await response.json();
+                // Re-apply team customizations on top of fresh base
+                if (supabase && session && team) {
+                    try {
+                        const { data: customizations } = await supabase
+                            .from('catalog_customizations')
+                            .select('*')
+                            .eq('team_id', team.id);
+                        data = applyCatalogCustomizations(data, customizations);
+                    } catch (e) { console.log('Failed to load customizations during refresh'); }
+                }
                 setCatalog(data);
                 localStorage.setItem('av-estimator-catalog', JSON.stringify(data));
                 setCatalogSyncStatus('synced');
-                showToast(`Catalog updated: ${data.length} items`);
+                showToast(`Catalog updated: ${data.filter(c => !c.deleted).length} items`);
                 return;
             }
         } catch (e) {}
@@ -6078,31 +6118,47 @@ function App() {
         return { cost, labor, items };
     };
 
-    // Wrapper to update catalog + sync customizations to Supabase for teams
+    // Wrapper to update catalog + sync full catalog to Supabase for teams
     const catalogSyncTimer = React.useRef(null);
     const updateCatalog = (newCatalog) => {
         const updated = typeof newCatalog === 'function' ? newCatalog(catalog) : newCatalog;
         setCatalog(updated);
 
-        // Sync favorites/notes to Supabase if on a team
+        // Sync full catalog to Supabase if on a team
         if (supabase && session && team) {
             clearTimeout(catalogSyncTimer.current);
             catalogSyncTimer.current = setTimeout(async () => {
                 try {
-                    const customizations = updated
-                        .filter(c => c.favorite || c.catalogNote)
-                        .map(c => ({
+                    // Find items that have been modified (have modifiedAt) or have customizations
+                    const modified = updated.filter(c => c.modifiedAt || c.favorite || c.catalogNote || c.deleted);
+                    if (modified.length > 0) {
+                        // Sync to catalog_customizations (includes ALL changes now)
+                        const customizations = modified.map(c => ({
                             team_id: team.id,
                             catalog_item_id: c.id,
                             favorite: !!c.favorite,
                             catalog_note: c.catalogNote || '',
+                            deleted: !!c.deleted,
+                            custom_fields: JSON.stringify({
+                                manufacturer: c.manufacturer,
+                                model: c.model,
+                                partNumber: c.partNumber,
+                                description: c.description,
+                                category: c.category,
+                                subcategory: c.subcategory,
+                                unitCost: c.unitCost,
+                                laborHrsPerUnit: c.laborHrsPerUnit,
+                                uom: c.uom,
+                                vendor: c.vendor,
+                                phase: c.phase || '',
+                                discontinued: !!c.discontinued,
+                            }),
                             updated_at: new Date().toISOString(),
                         }));
-                    if (customizations.length > 0) {
-                        await supabase.from('catalog_customizations').upsert(customizations);
+                        await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
                     }
                 } catch (e) {
-                    console.error('Catalog customization sync error:', e);
+                    console.error('Catalog sync error:', e);
                 }
             }, 2000);
         }
@@ -6257,20 +6313,32 @@ function App() {
                     if (settings.templates && Object.keys(settings.templates).length > 0) setTemplates(prev => Object.keys(prev).length > 0 ? prev : settings.templates);
                 }
 
-                // Pull catalog customizations if on a team
+                // Pull catalog customizations if on a team (includes edits, deletions, favorites, notes)
                 if (team) {
                     const { data: customizations } = await supabase
                         .from('catalog_customizations')
                         .select('*')
                         .eq('team_id', team.id);
                     if (customizations?.length > 0) {
-                        setCatalog(prev => prev.map(item => {
-                            const custom = customizations.find(c => c.catalog_item_id === item.id);
-                            if (custom) {
-                                return { ...item, favorite: custom.favorite, catalogNote: custom.catalog_note };
-                            }
-                            return item;
-                        }));
+                        setCatalog(prev => {
+                            const customMap = {};
+                            customizations.forEach(c => { customMap[c.catalog_item_id] = c; });
+                            return prev.map(item => {
+                                const custom = customMap[item.id];
+                                if (custom) {
+                                    let merged = { ...item, favorite: custom.favorite, catalogNote: custom.catalog_note, deleted: !!custom.deleted };
+                                    // Apply full field overrides if custom_fields exists
+                                    if (custom.custom_fields) {
+                                        try {
+                                            const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
+                                            merged = { ...merged, ...fields };
+                                        } catch (e) { console.error('Failed to parse custom_fields', e); }
+                                    }
+                                    return merged;
+                                }
+                                return item;
+                            });
+                        });
                     }
                 }
 
@@ -6390,37 +6458,19 @@ function App() {
         if (!XLSX) { showToast('Export library not loaded. Check your internet connection.'); return; }
         const projectName = (project.name || 'Project').replace(/[<>:"/\\|?*]/g, '-').trim();
 
-        if (reportHierarchyDepth !== -1) {
-            // Export per-group consolidated BOMs
-            const groups = getGroupedByHierarchy(project.locations, reportHierarchyDepth, packages, project.packages || []);
-            if (groups.length === 0) { showToast('No locations with components to export'); return; }
-            const wb = XLSX.utils.book_new();
-            for (const group of groups) {
-                const partMap = buildConsolidatedBOMSheet(group.locations);
-                const data = [[], ['BILL OF MATERIALS - ' + group.name, '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
-                for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
-                const ws = XLSX.utils.aoa_to_sheet(data);
-                ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
-                ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
-                const sheetName = group.name.substring(0, 31).replace(/[\\/*?[\]:]/g, '-');
-                XLSX.utils.book_append_sheet(wb, ws, sheetName);
-            }
-            XLSX.writeFile(wb, projectName + ' - Consolidated BOM (Grouped).xlsx');
-            showToast(`Consolidated BOM exported with ${groups.length} groups`);
-        } else {
-            const locationsWithItems = getLocationsWithItems(project.locations);
-            if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
-            const partMap = buildConsolidatedBOMSheet(locationsWithItems);
-            const wb = XLSX.utils.book_new();
-            const data = [[], ['BILL OF MATERIALS (Import Template)', '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
-            for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
-            const ws = XLSX.utils.aoa_to_sheet(data);
-            ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
-            ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
-            XLSX.utils.book_append_sheet(wb, ws, 'Bill of materials');
-            XLSX.writeFile(wb, projectName + ' - Consolidated BOM.xlsx');
-            showToast('Consolidated BOM exported');
-        }
+        // Always export as single file, single sheet with all project items consolidated
+        const locationsWithItems = getLocationsWithItems(project.locations);
+        if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
+        const partMap = buildConsolidatedBOMSheet(locationsWithItems);
+        const wb = XLSX.utils.book_new();
+        const data = [[], ['BILL OF MATERIALS - ' + projectName, '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
+        for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
+        ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
+        XLSX.utils.book_append_sheet(wb, ws, 'Bill of materials');
+        XLSX.writeFile(wb, projectName + ' - Consolidated BOM.xlsx');
+        showToast('Consolidated BOM exported');
     };
 
     // Build consolidated BOM data for the in-app view
@@ -7322,23 +7372,33 @@ function App() {
                             </div>
 
                             {multiSelectLocations.length > 0 && (
-                                <div style={{ ...styles.sidebarActions, borderTop: 'none', paddingTop: 0 }}>
-                                    <button 
-                                        style={{ ...styles.smallButton, flex: 1, backgroundColor: '#3d1a1a', color: '#f87171' }} 
+                                <div style={{ ...styles.sidebarActions, borderTop: 'none', paddingTop: 0, flexWrap: 'wrap', gap: '4px' }}>
+                                    <button
+                                        style={{ ...styles.smallButton, flex: '1 1 auto', backgroundColor: '#1a2e1a', color: '#4ade80', fontSize: '11px' }}
+                                        onClick={() => { multiSelectLocations.forEach(loc => promoteLocation(loc.id)); setMultiSelectLocations([]); }}>
+                                        <Icons.ChevronLeft /> Promote ({multiSelectLocations.length})
+                                    </button>
+                                    <button
+                                        style={{ ...styles.smallButton, flex: '1 1 auto', backgroundColor: '#1a2e3d', color: '#60a5fa', fontSize: '11px' }}
+                                        onClick={() => { multiSelectLocations.forEach(loc => demoteLocation(loc.id)); setMultiSelectLocations([]); }}>
+                                        <Icons.ChevronRight /> Demote ({multiSelectLocations.length})
+                                    </button>
+                                    <button
+                                        style={{ ...styles.smallButton, flex: '1 1 100%', backgroundColor: '#3d1a1a', color: '#f87171' }}
                                         onClick={() => { setDeleteTargets(multiSelectLocations); setShowDelete(true); }}>
                                         <Icons.Trash /> Delete Selected ({multiSelectLocations.length})
                                     </button>
-                                    <button 
-                                        style={{ ...styles.smallButton, backgroundColor: '#2f3336' }} 
+                                    <button
+                                        style={{ ...styles.smallButton, backgroundColor: '#2f3336' }}
                                         onClick={() => setMultiSelectLocations([])}>
                                         <Icons.X />
                                     </button>
                                 </div>
                             )}
 
-                            {selected && selectedDepth === 0 && selected.children?.length > 0 && (
+                            {selected && (
                                 <div style={{ ...styles.sidebarActions, borderTop: 'none', paddingTop: 0 }}>
-                                    <button style={{ ...styles.smallButton, flex: 1, backgroundColor: '#3d2e1a', color: '#ffad1f' }} onClick={() => setShowDuplicate(true)}><Icons.Duplicate /> Duplicate Structure</button>
+                                    <button style={{ ...styles.smallButton, flex: 1, backgroundColor: '#3d2e1a', color: '#ffad1f' }} onClick={() => setShowDuplicate(true)}><Icons.Duplicate /> Duplicate Location</button>
                                 </div>
                             )}
 

@@ -86,11 +86,3 @@ av-estimator/
 └── README.md          # This file
 ```
 
-## Future: Azure Authentication
-
-When you're ready to enable SharePoint project sync:
-1. Register an app in Azure Portal
-2. Update the CONFIG section in index.html with your Client ID and Tenant ID
-3. Projects will sync to SharePoint automatically
-
-See the CONFIG section in index.html for detailed Azure setup instructions.
