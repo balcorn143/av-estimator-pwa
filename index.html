@@ -31,6 +31,7 @@
         body { color: #e7e9ea; }
         input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cursor: pointer; }
         select { color: #e7e9ea; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
     </style>
 </head>
 <body>
@@ -3482,7 +3483,7 @@ const CATALOG_COLUMNS = [
     { id: 'actions', label: 'Actions', width: 80, fixed: true },
 ];
 
-function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, compactMode }) {
+function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog, syncStatus, catalogDirty, compactMode }) {
     const [search, setSearch] = useState('');
     const [categoryFilter, setCategoryFilter] = useState('');
     const [showAddItem, setShowAddItem] = useState(false);
@@ -3594,6 +3595,14 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, c
                     >
                         {editMode ? <><Icons.Lock /> Lock</> : <><Icons.Unlock /> Unlock</>}
                     </button>
+                    {catalogDirty && (
+                        <button
+                            style={{ ...styles.button('primary'), animation: 'pulse 2s infinite', boxShadow: '0 0 12px rgba(29,155,240,0.5)' }}
+                            onClick={onSaveCatalog}
+                        >
+                            <Icons.Save /> Save Changes
+                        </button>
+                    )}
                     <button style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c' }} onClick={onRefreshCatalog}>
                         <Icons.Sync /> Refresh
                     </button>
@@ -5836,6 +5845,7 @@ function App() {
     const [tab, setTab] = useState('project');
     const [catalog, setCatalog] = useState([]);
     const [catalogSyncStatus, setCatalogSyncStatus] = useState('loading');
+    const [catalogDirty, setCatalogDirty] = useState(false);
     const [catalogConflicts, setCatalogConflicts] = useState(null);
     const [packages, setPackages] = useState([]);
     
@@ -5908,6 +5918,7 @@ function App() {
         setCatalog(baseCatalog);
         localStorage.setItem('av-estimator-catalog', JSON.stringify(baseCatalog));
         setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
+        setCatalogDirty(false);
     };
     
     const loadPackagesData = async () => {
@@ -5957,6 +5968,7 @@ function App() {
                 setCatalog(data);
                 localStorage.setItem('av-estimator-catalog', JSON.stringify(data));
                 setCatalogSyncStatus('synced');
+                setCatalogDirty(false);
                 showToast(`Catalog updated: ${data.filter(c => !c.deleted).length} items`);
                 return;
             }
@@ -6278,45 +6290,53 @@ function App() {
     const updateCatalog = (newCatalog) => {
         const updated = typeof newCatalog === 'function' ? newCatalog(catalog) : newCatalog;
         setCatalog(updated);
+        setCatalogDirty(true);
+        // Immediately save to localStorage so a page refresh won't lose changes
+        localStorage.setItem('av-estimator-catalog', JSON.stringify(updated));
+    };
 
-        // Sync full catalog to Supabase if on a team
+    const saveCatalog = async () => {
+        // Save to localStorage immediately
+        localStorage.setItem('av-estimator-catalog', JSON.stringify(catalog));
+
+        // Sync to Supabase if on a team
         if (supabase && session && team) {
-            clearTimeout(catalogSyncTimer.current);
-            catalogSyncTimer.current = setTimeout(async () => {
-                try {
-                    // Find items that have been modified (have modifiedAt) or have customizations
-                    const modified = updated.filter(c => c.modifiedAt || c.favorite || c.catalogNote || c.deleted);
-                    if (modified.length > 0) {
-                        // Sync to catalog_customizations (includes ALL changes now)
-                        const customizations = modified.map(c => ({
-                            team_id: team.id,
-                            catalog_item_id: c.id,
-                            favorite: !!c.favorite,
-                            catalog_note: c.catalogNote || '',
-                            deleted: !!c.deleted,
-                            custom_fields: JSON.stringify({
-                                manufacturer: c.manufacturer,
-                                model: c.model,
-                                partNumber: c.partNumber,
-                                description: c.description,
-                                category: c.category,
-                                subcategory: c.subcategory,
-                                unitCost: c.unitCost,
-                                laborHrsPerUnit: c.laborHrsPerUnit,
-                                uom: c.uom,
-                                vendor: c.vendor,
-                                phase: c.phase || '',
-                                discontinued: !!c.discontinued,
-                            }),
-                            updated_at: new Date().toISOString(),
-                        }));
-                        await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
-                    }
-                } catch (e) {
-                    console.error('Catalog sync error:', e);
+            setCatalogSyncStatus('syncing');
+            try {
+                const modified = catalog.filter(c => c.modifiedAt || c.favorite || c.catalogNote || c.deleted);
+                if (modified.length > 0) {
+                    const customizations = modified.map(c => ({
+                        team_id: team.id,
+                        catalog_item_id: c.id,
+                        favorite: !!c.favorite,
+                        catalog_note: c.catalogNote || '',
+                        deleted: !!c.deleted,
+                        custom_fields: JSON.stringify({
+                            manufacturer: c.manufacturer,
+                            model: c.model,
+                            partNumber: c.partNumber,
+                            description: c.description,
+                            category: c.category,
+                            subcategory: c.subcategory,
+                            unitCost: c.unitCost,
+                            laborHrsPerUnit: c.laborHrsPerUnit,
+                            uom: c.uom,
+                            vendor: c.vendor,
+                            phase: c.phase || '',
+                            discontinued: !!c.discontinued,
+                        }),
+                        updated_at: new Date().toISOString(),
+                    }));
+                    await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
                 }
-            }, 2000);
+                setCatalogSyncStatus('synced');
+            } catch (e) {
+                console.error('Catalog sync error:', e);
+                setCatalogSyncStatus('offline');
+            }
         }
+        setCatalogDirty(false);
+        showToast('Catalog saved');
     };
 
     // Auto-save to localStorage + Supabase sync (skip until initial load completes)
@@ -7355,7 +7375,9 @@ function App() {
                             catalog={catalog}
                             onUpdateCatalog={updateCatalog}
                             onRefreshCatalog={refreshCatalog}
+                            onSaveCatalog={saveCatalog}
                             syncStatus={catalogSyncStatus}
+                            catalogDirty={catalogDirty}
                             compactMode={compactMode}
                         />
                     </main>
@@ -7749,11 +7771,13 @@ function App() {
 
                 {tab === 'catalog' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
-                        <CatalogView 
-                            catalog={catalog} 
+                        <CatalogView
+                            catalog={catalog}
                             onUpdateCatalog={updateCatalog}
                             onRefreshCatalog={refreshCatalog}
+                            onSaveCatalog={saveCatalog}
                             syncStatus={catalogSyncStatus}
+                            catalogDirty={catalogDirty}
                             compactMode={compactMode}
                         />
                     </section>
