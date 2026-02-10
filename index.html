@@ -736,9 +736,9 @@ function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onD
     };
     
     const handleClick = (loc, e) => {
-        if (e.ctrlKey || e.metaKey) {
-            // Ctrl+click toggles multi-select
-            onMultiSelectToggle(loc);
+        if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            // Shift/Ctrl+click toggles multi-select (event passed for shift-range)
+            onMultiSelectToggle(loc, e);
         } else {
             onSelect(loc);
         }
@@ -2942,7 +2942,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
 }
 
 // Catalog Item Editor Modal
-function CatalogItemModal({ item, onClose, onSave, categories }) {
+function CatalogItemModal({ item, onClose, onSave, categories, catalog }) {
     const [form, setForm] = useState({
         manufacturer: item?.manufacturer || '',
         model: item?.model || '',
@@ -2958,20 +2958,52 @@ function CatalogItemModal({ item, onClose, onSave, categories }) {
         phase: item?.phase || '',
         catalogNote: item?.catalogNote || '',
     });
-    
+    const [defaultAccessories, setDefaultAccessories] = useState(item?.defaultAccessories || []);
+    const [accSearch, setAccSearch] = useState('');
+    const [showAccSearch, setShowAccSearch] = useState(false);
+
+    const accSearchResults = useMemo(() => {
+        if (accSearch.length < 2 || !catalog) return [];
+        const term = accSearch.toLowerCase();
+        const currentId = item?.id;
+        return catalog.filter(c =>
+            c.id !== currentId && !c.deleted &&
+            ((c.manufacturer?.toLowerCase().includes(term)) ||
+             (c.model?.toLowerCase().includes(term)) ||
+             (c.partNumber?.toLowerCase().includes(term)) ||
+             (c.description?.toLowerCase().includes(term)))
+        ).slice(0, 10);
+    }, [catalog, accSearch, item?.id]);
+
+    const addAccessory = (catItem) => {
+        if (defaultAccessories.some(a => a.catalogId === catItem.id)) return;
+        setDefaultAccessories(prev => [...prev, { catalogId: catItem.id, qtyPer: 1 }]);
+        setAccSearch('');
+        setShowAccSearch(false);
+    };
+
+    const removeAccessory = (catalogId) => {
+        setDefaultAccessories(prev => prev.filter(a => a.catalogId !== catalogId));
+    };
+
+    const updateAccQty = (catalogId, newQty) => {
+        setDefaultAccessories(prev => prev.map(a => a.catalogId === catalogId ? { ...a, qtyPer: Math.max(1, parseInt(newQty) || 1) } : a));
+    };
+
     const [newCategory, setNewCategory] = useState('');
     const [newSubcategory, setNewSubcategory] = useState('');
     const [showNewCategory, setShowNewCategory] = useState(false);
     const [showNewSubcategory, setShowNewSubcategory] = useState(false);
-    
+
     const existingCategories = [...new Set(categories.map(c => c.category).concat(form.category ? [form.category] : []))].filter(Boolean).sort();
     const existingSubcategories = [...new Set(categories.filter(c => c.category === form.category).map(c => c.subcategory).concat(form.subcategory ? [form.subcategory] : []))].filter(Boolean).sort();
-    
+
     const handleSubmit = () => {
         if (!form.manufacturer.trim() || !form.model.trim()) return;
         onSave({
             ...item,
             ...form,
+            defaultAccessories: defaultAccessories.length > 0 ? defaultAccessories : undefined,
             id: item?.id || generateCatalogId(),
             modifiedAt: new Date().toISOString(),
         });
@@ -3076,6 +3108,85 @@ function CatalogItemModal({ item, onClose, onSave, categories }) {
                     <label style={labelStyle}>Catalog Note</label>
                     <textarea value={form.catalogNote} onChange={e => setForm({ ...form, catalogNote: e.target.value })} style={{ ...inputStyle, minHeight: '60px', resize: 'vertical', fontFamily: 'inherit' }} placeholder="e.g., Replacement: Samsung QM85R" />
                 </div>
+
+                {/* Default Accessories */}
+                {catalog && (
+                    <div style={{ marginTop: '12px', padding: '16px', backgroundColor: '#161b22', borderRadius: '8px', border: '1px solid #2f3336' }}>
+                        <label style={{ ...labelStyle, marginBottom: '8px' }}>Default Accessories</label>
+                        <p style={{ fontSize: '12px', color: '#6e767d', margin: '0 0 12px 0' }}>Items added automatically when this component is inserted into a project.</p>
+                        {defaultAccessories.length > 0 && (
+                            <div style={{ marginBottom: '12px' }}>
+                                {defaultAccessories.map(acc => {
+                                    const catItem = catalog.find(c => c.id === acc.catalogId);
+                                    return (
+                                        <div key={acc.catalogId} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', backgroundColor: '#1a1f26', borderRadius: '6px', marginBottom: '4px', border: '1px solid #2f3336' }}>
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                value={acc.qtyPer}
+                                                onChange={e => updateAccQty(acc.catalogId, e.target.value)}
+                                                onFocus={e => e.target.select()}
+                                                style={{ ...styles.inputSmall, width: '50px', textAlign: 'center' }}
+                                            />
+                                            <span style={{ fontSize: '12px', color: '#6e767d' }}>x</span>
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{ fontSize: '13px', color: '#e7e9ea', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                    {catItem ? `${catItem.manufacturer} ${catItem.model}` : `Unknown (${acc.catalogId})`}
+                                                </div>
+                                                {catItem && <div style={{ fontSize: '11px', color: '#6e767d' }}>{catItem.description}</div>}
+                                            </div>
+                                            {catItem && <span style={{ fontSize: '12px', color: '#00ba7c', flexShrink: 0 }}>{fmtCost(catItem.unitCost)}</span>}
+                                            <button
+                                                style={{ ...styles.iconButton, color: '#f87171', padding: '4px', flexShrink: 0 }}
+                                                onClick={() => removeAccessory(acc.catalogId)}
+                                                title="Remove accessory">
+                                                <Icons.X />
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                        {showAccSearch ? (
+                            <div>
+                                <input
+                                    type="text"
+                                    value={accSearch}
+                                    onChange={e => setAccSearch(e.target.value)}
+                                    placeholder="Search catalog for accessory..."
+                                    style={{ ...inputStyle, marginBottom: '8px' }}
+                                    autoFocus
+                                />
+                                {accSearchResults.length > 0 && (
+                                    <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #2f3336', borderRadius: '6px' }}>
+                                        {accSearchResults.map(c => (
+                                            <div
+                                                key={c.id}
+                                                style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderBottom: '1px solid #2f3336', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                                                onClick={() => addAccessory(c)}
+                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1a1f26'}
+                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                            >
+                                                <div>
+                                                    <span style={{ fontWeight: '600' }}>{c.manufacturer}</span> <span style={{ color: '#1d9bf0' }}>{c.model}</span>
+                                                    <div style={{ fontSize: '11px', color: '#6e767d' }}>{c.description}</div>
+                                                </div>
+                                                <span style={{ color: '#00ba7c', fontSize: '12px', flexShrink: 0, marginLeft: '12px' }}>{fmtCost(c.unitCost)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                                    <button style={styles.smallButton} onClick={() => { setShowAccSearch(false); setAccSearch(''); }}>Cancel</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <button style={{ ...styles.smallButton, color: '#1d9bf0' }} onClick={() => setShowAccSearch(true)}>
+                                <Icons.Plus /> Add Accessory
+                            </button>
+                        )}
+                    </div>
+                )}
 
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px', borderTop: '1px solid #2f3336', paddingTop: '20px' }}>
                     <button style={styles.button('secondary')} onClick={onClose}>Cancel</button>
@@ -3589,11 +3700,12 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, syncStatus, c
             
             {/* Add/Edit Item Modal */}
             {(showAddItem || editItem) && (
-                <CatalogItemModal 
-                    item={editItem} 
+                <CatalogItemModal
+                    item={editItem}
                     onClose={() => { setShowAddItem(false); setEditItem(null); }}
                     onSave={handleSave}
                     categories={catalog}
+                    catalog={catalog}
                 />
             )}
             
@@ -5869,6 +5981,7 @@ function App() {
     const [expandedWorkspaceLocations, setExpandedWorkspaceLocations] = useState({}); // For all-locations view
     const [templates, setTemplates] = useState([]);
     const [multiSelectLocations, setMultiSelectLocations] = useState([]);
+    const lastMultiSelectLocRef = useRef(null);
     const [deleteTargets, setDeleteTargets] = useState([]); // For delete modal - can be single or multiple
     const [showSavePackage, setShowSavePackage] = useState(false);
     const [showSaveTemplate, setShowSaveTemplate] = useState(false);
@@ -7447,7 +7560,7 @@ function App() {
 
                             {multiSelectLocations.length === 0 && project.locations.length > 0 && (
                                 <div style={{ padding: '4px 16px 8px', fontSize: '11px', color: '#6e767d' }}>
-                                    💡 Ctrl+Click to multi-select
+                                    💡 Ctrl+Click to multi-select, Shift+Click to select range
                                 </div>
                             )}
 
@@ -7465,12 +7578,41 @@ function App() {
                                         onPromote={promoteLocation}
                                         onDemote={demoteLocation}
                                         multiSelect={multiSelectLocations}
-                                        onMultiSelectToggle={(loc) => {
-                                            setMultiSelectLocations(prev => 
-                                                prev.some(l => l.id === loc.id) 
-                                                    ? prev.filter(l => l.id !== loc.id) 
-                                                    : [...prev, loc]
-                                            );
+                                        onMultiSelectToggle={(loc, e) => {
+                                            if (e?.shiftKey && lastMultiSelectLocRef.current) {
+                                                // Shift+click: select range of visible locations
+                                                const flattenVisible = (locs) => {
+                                                    let result = [];
+                                                    for (const l of locs) {
+                                                        result.push(l);
+                                                        if (l.children?.length > 0 && expandedLocations[l.id]) {
+                                                            result = result.concat(flattenVisible(l.children));
+                                                        }
+                                                    }
+                                                    return result;
+                                                };
+                                                const flat = flattenVisible(project.locations);
+                                                const idxA = flat.findIndex(l => l.id === lastMultiSelectLocRef.current);
+                                                const idxB = flat.findIndex(l => l.id === loc.id);
+                                                if (idxA !== -1 && idxB !== -1) {
+                                                    const start = Math.min(idxA, idxB);
+                                                    const end = Math.max(idxA, idxB);
+                                                    const range = flat.slice(start, end + 1);
+                                                    setMultiSelectLocations(prev => {
+                                                        const combined = [...prev];
+                                                        range.forEach(r => { if (!combined.some(c => c.id === r.id)) combined.push(r); });
+                                                        return combined;
+                                                    });
+                                                }
+                                            } else {
+                                                // Ctrl+click: toggle individual
+                                                setMultiSelectLocations(prev =>
+                                                    prev.some(l => l.id === loc.id)
+                                                        ? prev.filter(l => l.id !== loc.id)
+                                                        : [...prev, loc]
+                                                );
+                                            }
+                                            lastMultiSelectLocRef.current = loc.id;
                                         }}
                                         searchTerm={locationSearch}
                                         expandedState={expandedLocations}
