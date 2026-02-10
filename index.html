@@ -6051,7 +6051,7 @@ function App() {
             console.log('Failed to fetch remote catalog, using local');
         }
 
-        // Fall back to localStorage
+        // Fall back to localStorage if fetch failed
         if (!baseCatalog) {
             const saved = localStorage.getItem('av-estimator-catalog');
             if (saved) {
@@ -6065,14 +6065,40 @@ function App() {
         // Apply team customizations (edits, deletions, favorites, notes) on top of base catalog
         if (supabase && session && team) {
             try {
-                const { data: customizations } = await supabase
+                const { data: customizations, error } = await supabase
                     .from('catalog_customizations')
                     .select('*')
                     .eq('team_id', team.id)
                     .limit(5000);
-                baseCatalog = applyCatalogCustomizations(baseCatalog, customizations);
+                if (!error && customizations?.length > 0) {
+                    baseCatalog = applyCatalogCustomizations(baseCatalog, customizations);
+                } else if (error) {
+                    console.log('Catalog customizations query error:', error.message);
+                    // Fall back to localStorage which may have local edits
+                    const saved = localStorage.getItem('av-estimator-catalog');
+                    if (saved) {
+                        try { baseCatalog = JSON.parse(saved); } catch (e) {}
+                    }
+                }
             } catch (e) {
                 console.log('Failed to load catalog customizations');
+                // Fall back to localStorage
+                const saved = localStorage.getItem('av-estimator-catalog');
+                if (saved) {
+                    try { baseCatalog = JSON.parse(saved); } catch (e2) {}
+                }
+            }
+        } else {
+            // Not on a team — prefer localStorage if it has data (preserves local edits/deletions)
+            const saved = localStorage.getItem('av-estimator-catalog');
+            if (saved) {
+                try {
+                    const localCatalog = JSON.parse(saved);
+                    // Only use local if it has modifications (deletions, edits, etc.)
+                    if (localCatalog.some(c => c.deleted || c.modifiedAt || c.favorite || c.catalogNote)) {
+                        baseCatalog = localCatalog;
+                    }
+                } catch (e) {}
             }
         }
 
