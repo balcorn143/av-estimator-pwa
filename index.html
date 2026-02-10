@@ -5086,71 +5086,67 @@ function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, t
                     />
                 </div>
                 
-                {/* Projects grid */}
+                {/* Projects table */}
                 {filteredProjects.length > 0 ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '16px' }}>
-                        {filteredProjects.map(project => {
-                            const totals = getProjectTotals(project);
-                            const status = PROJECT_STATUSES[project.status] || PROJECT_STATUSES.bidding;
-                            return (
-                                <div 
-                                    key={project.id}
-                                    style={{ 
-                                        backgroundColor: '#1a1f26', 
-                                        borderRadius: '12px', 
-                                        border: '1px solid #2f3336',
-                                        padding: '20px',
-                                        cursor: 'pointer',
-                                        transition: 'border-color 0.15s, transform 0.15s',
-                                    }}
-                                    onClick={() => onOpen(project.id)}
-                                    onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, project }); }}
-                                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#4a5568'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
-                                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#2f3336'; e.currentTarget.style.transform = 'translateY(0)'; }}
-                                >
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                                        <div style={{ flex: 1, minWidth: 0 }}>
-                                            <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', fontWeight: '600', color: '#e7e9ea', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name}</h3>
-                                            {project.client && <div style={{ fontSize: '13px', color: '#8b98a5' }}>{project.client}</div>}
-                                            {checkouts[project.id] && (
-                                                <div style={{ fontSize: '11px', color: checkouts[project.id].userId === session?.user?.id ? '#00ba7c' : '#f59e0b', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    <Icons.Lock /> {checkouts[project.id].userId === session?.user?.id ? 'Checked out by you' : `Checked out by ${checkouts[project.id].email}`}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, marginLeft: '12px' }}>
-                                            <button 
-                                                style={{ ...styles.iconButton, color: '#6e767d', padding: '4px' }}
-                                                onClick={e => { e.stopPropagation(); onEdit(project); }}
-                                                title="Edit project info">
-                                                <Icons.Edit />
-                                            </button>
-                                            <span style={{ ...styles.badge(''), backgroundColor: status.bg, color: status.color }}>{status.label}</span>
-                                        </div>
-                                    </div>
-                                    
-                                    <div style={{ display: 'flex', gap: '16px', marginBottom: '12px' }}>
-                                        <div>
-                                            <div style={{ fontSize: '11px', color: '#6e767d', marginBottom: '2px' }}>MATERIAL</div>
-                                            <div style={{ fontSize: '16px', fontWeight: '600', color: '#00ba7c' }}>{fmtCost(totals.cost)}</div>
-                                        </div>
-                                        <div>
-                                            <div style={{ fontSize: '11px', color: '#6e767d', marginBottom: '2px' }}>LABOR</div>
-                                            <div style={{ fontSize: '16px', fontWeight: '600', color: '#1d9bf0' }}>{fmtHrs(totals.labor)}</div>
-                                        </div>
-                                        <div>
-                                            <div style={{ fontSize: '11px', color: '#6e767d', marginBottom: '2px' }}>ITEMS</div>
-                                            <div style={{ fontSize: '16px', fontWeight: '600' }}>{totals.items}</div>
-                                        </div>
-                                    </div>
-                                    
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#6e767d' }}>
-                                        <span>{project.projectNumber || 'No project #'}</span>
-                                        <span>Updated {new Date(project.updatedAt).toLocaleDateString()}</span>
-                                    </div>
-                                </div>
-                            );
-                        })}
+                    <div style={{ backgroundColor: '#1a1f26', borderRadius: '12px', border: '1px solid #2f3336', overflow: 'hidden' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <thead>
+                                <tr style={{ borderBottom: '1px solid #2f3336' }}>
+                                    <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Project</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Client</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Project #</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'center', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Status</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Material</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Labor</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Items</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase' }}>Updated</th>
+                                    <th style={{ padding: '10px 12px', width: '40px' }}></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filteredProjects.map(project => {
+                                    const totals = getProjectTotals(project);
+                                    const status = PROJECT_STATUSES[project.status] || PROJECT_STATUSES.developing;
+                                    const checkout = checkouts[project.id];
+                                    return (
+                                        <tr
+                                            key={project.id}
+                                            style={{ borderBottom: '1px solid #2f3336', cursor: 'pointer', transition: 'background-color 0.1s' }}
+                                            onClick={() => onOpen(project.id)}
+                                            onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, project }); }}
+                                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1e2530'}
+                                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                        >
+                                            <td style={{ padding: '12px 16px' }}>
+                                                <div style={{ fontWeight: '600', color: '#e7e9ea', fontSize: '14px' }}>{project.name}</div>
+                                                {checkout && (
+                                                    <div style={{ fontSize: '11px', color: checkout.userId === session?.user?.id ? '#00ba7c' : '#f59e0b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                        <Icons.Lock /> {checkout.userId === session?.user?.id ? 'Checked out by you' : `Checked out by ${checkout.email}`}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td style={{ padding: '12px 12px', color: '#8b98a5', fontSize: '13px' }}>{project.client || '—'}</td>
+                                            <td style={{ padding: '12px 12px', color: '#8b98a5', fontSize: '13px' }}>{project.projectNumber || '—'}</td>
+                                            <td style={{ padding: '12px 12px', textAlign: 'center' }}>
+                                                <span style={{ ...styles.badge(''), backgroundColor: status.bg, color: status.color, fontSize: '11px' }}>{status.label}</span>
+                                            </td>
+                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#00ba7c', fontWeight: '600', fontSize: '13px' }}>{fmtCost(totals.cost)}</td>
+                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#1d9bf0', fontWeight: '600', fontSize: '13px' }}>{fmtHrs(totals.labor)}</td>
+                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#e7e9ea', fontSize: '13px' }}>{totals.items}</td>
+                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#6e767d', fontSize: '12px', whiteSpace: 'nowrap' }}>{new Date(project.updatedAt).toLocaleDateString()}</td>
+                                            <td style={{ padding: '12px 8px', textAlign: 'center' }}>
+                                                <button
+                                                    style={{ ...styles.iconButton, color: '#6e767d', padding: '4px' }}
+                                                    onClick={e => { e.stopPropagation(); onEdit(project); }}
+                                                    title="Edit project info">
+                                                    <Icons.Edit />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
                     </div>
                 ) : (
                     <div style={{ textAlign: 'center', padding: '60px 20px' }}>
@@ -5691,41 +5687,14 @@ function App() {
         setCatalogSyncStatus('syncing');
         let baseCatalog = null;
 
-        // Try Supabase catalog table first
-        if (supabase && session) {
-            try {
-                const { data, error } = await supabase.from('catalog').select('*');
-                if (!error && data?.length > 0) {
-                    baseCatalog = data.map(row => ({
-                        id: row.id,
-                        manufacturer: row.manufacturer || '',
-                        model: row.model || '',
-                        partNumber: row.part_number || '',
-                        description: row.description || '',
-                        category: row.category || '',
-                        subcategory: row.subcategory || '',
-                        unitCost: Number(row.unit_cost || 0),
-                        laborHrsPerUnit: Number(row.labor_hrs_per_unit || 0),
-                        uom: row.uom || 'EA',
-                        vendor: row.vendor || '',
-                        discontinued: !!row.discontinued,
-                    }));
-                }
-            } catch (e) {
-                console.log('Failed to fetch Supabase catalog, trying file');
+        // Always load base catalog from av_catalog.json (full dataset, not limited by Supabase row limits)
+        try {
+            const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
+            if (response.ok) {
+                baseCatalog = await response.json();
             }
-        }
-
-        // Fall back to file fetch
-        if (!baseCatalog) {
-            try {
-                const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-                if (response.ok) {
-                    baseCatalog = await response.json();
-                }
-            } catch (e) {
-                console.log('Failed to fetch remote catalog, using local');
-            }
+        } catch (e) {
+            console.log('Failed to fetch remote catalog, using local');
         }
 
         // Fall back to localStorage
@@ -5745,7 +5714,8 @@ function App() {
                 const { data: customizations } = await supabase
                     .from('catalog_customizations')
                     .select('*')
-                    .eq('team_id', team.id);
+                    .eq('team_id', team.id)
+                    .limit(5000);
                 baseCatalog = applyCatalogCustomizations(baseCatalog, customizations);
             } catch (e) {
                 console.log('Failed to load catalog customizations');
@@ -5796,7 +5766,8 @@ function App() {
                         const { data: customizations } = await supabase
                             .from('catalog_customizations')
                             .select('*')
-                            .eq('team_id', team.id);
+                            .eq('team_id', team.id)
+                            .limit(5000);
                         data = applyCatalogCustomizations(data, customizations);
                     } catch (e) { console.log('Failed to load customizations during refresh'); }
                 }
@@ -6318,7 +6289,8 @@ function App() {
                     const { data: customizations } = await supabase
                         .from('catalog_customizations')
                         .select('*')
-                        .eq('team_id', team.id);
+                        .eq('team_id', team.id)
+                        .limit(5000);
                     if (customizations?.length > 0) {
                         setCatalog(prev => {
                             const customMap = {};
@@ -6440,12 +6412,12 @@ function App() {
             for (const item of flatItems) {
                 const key = item.partNumber || (item.manufacturer + '|' + item.model);
                 if (partMap[key]) { partMap[key].qty += (item.qty || 0); }
-                else { partMap[key] = { qty: item.qty || 0, name: item.description || ((item.manufacturer || '') + ' ' + (item.model || '')).trim(), manufacturer: item.manufacturer || '', supplier: item.vendor || '', partNumber: item.partNumber || '', uom: item.uom || 'EA', unitCost: item.unitCost || 0 }; }
+                else { partMap[key] = { qty: item.qty || 0, model: item.model || '', manufacturer: item.manufacturer || '', supplier: item.vendor || '', partNumber: item.partNumber || '', uom: item.uom || 'EA', unitCost: item.unitCost || 0, phase: item.phase || '' }; }
                 if (item.accessories) {
                     for (const acc of item.accessories) {
                         const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
                         if (partMap[accKey]) { partMap[accKey].qty += (acc.qty || 0); }
-                        else { partMap[accKey] = { qty: acc.qty || 0, name: acc.description || ((acc.manufacturer || '') + ' ' + (acc.model || '')).trim(), manufacturer: acc.manufacturer || '', supplier: acc.vendor || '', partNumber: acc.partNumber || '', uom: acc.uom || 'EA', unitCost: acc.unitCost || 0 }; }
+                        else { partMap[accKey] = { qty: acc.qty || 0, model: acc.model || '', manufacturer: acc.manufacturer || '', supplier: acc.vendor || '', partNumber: acc.partNumber || '', uom: acc.uom || 'EA', unitCost: acc.unitCost || 0, phase: acc.phase || '' }; }
                     }
                 }
             }
@@ -6463,11 +6435,11 @@ function App() {
         if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
         const partMap = buildConsolidatedBOMSheet(locationsWithItems);
         const wb = XLSX.utils.book_new();
-        const data = [[], ['BILL OF MATERIALS - ' + projectName, '', '', '', '', '', ''], [], [], ['QTY', 'Name', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost'], []];
-        for (const part of Object.values(partMap)) { data.push([part.qty, part.name, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost]); }
+        const data = [[], ['BILL OF MATERIALS - ' + projectName, '', '', '', '', '', '', '', ''], [], [], ['QTY', 'Model', 'Manufacturer', 'Supplier', 'Part Number', 'UOM', 'Item Cost', 'Total Cost', 'Phase'], []];
+        for (const part of Object.values(partMap)) { data.push([part.qty, part.model, part.manufacturer, part.supplier, part.partNumber, part.uom, part.unitCost, (part.qty || 0) * (part.unitCost || 0), part.phase]); }
         const ws = XLSX.utils.aoa_to_sheet(data);
-        ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
-        ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 10 }, { wch: 10 }];
+        ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 8 } }];
+        ws['!cols'] = [{ wch: 5 }, { wch: 25 }, { wch: 14 }, { wch: 12 }, { wch: 15 }, { wch: 6 }, { wch: 10 }, { wch: 12 }, { wch: 22 }];
         XLSX.utils.book_append_sheet(wb, ws, 'Bill of materials');
         XLSX.writeFile(wb, projectName + ' - Consolidated BOM.xlsx');
         showToast('Consolidated BOM exported');
