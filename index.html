@@ -6039,30 +6039,31 @@ function App() {
 
     const loadCatalogData = async () => {
         setCatalogSyncStatus('syncing');
-        let baseCatalog = null;
+        let catalog = null;
 
-        // Always load base catalog from av_catalog.json (full dataset, not limited by Supabase row limits)
-        try {
-            const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-            if (response.ok) {
-                baseCatalog = await response.json();
-            }
-        } catch (e) {
-            console.log('Failed to fetch remote catalog, using local');
+        // 1. Try localStorage first — it has the user's latest edits/deletions
+        const saved = localStorage.getItem('av-estimator-catalog');
+        if (saved) {
+            try { catalog = JSON.parse(saved); } catch (e) {}
         }
 
-        // Fall back to localStorage if fetch failed
-        if (!baseCatalog) {
-            const saved = localStorage.getItem('av-estimator-catalog');
-            if (saved) {
-                try { baseCatalog = JSON.parse(saved); } catch (e) {}
+        // 2. If no localStorage, seed from av_catalog.json
+        if (!catalog) {
+            try {
+                const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
+                if (response.ok) {
+                    catalog = await response.json();
+                }
+            } catch (e) {
+                console.log('Failed to fetch remote catalog');
             }
         }
 
-        // Fall back to defaults
-        if (!baseCatalog) baseCatalog = DEFAULT_CATALOG;
+        // 3. Final fallback to defaults
+        if (!catalog) catalog = DEFAULT_CATALOG;
 
-        // Apply team customizations (edits, deletions, favorites, notes) on top of base catalog
+        // 4. For team users, apply Supabase customizations on top of base JSON
+        //    (re-fetch base + overlay so team changes from other members are picked up)
         if (supabase && session && team) {
             try {
                 const { data: customizations, error } = await supabase
@@ -6071,39 +6072,23 @@ function App() {
                     .eq('team_id', team.id)
                     .limit(5000);
                 if (!error && customizations?.length > 0) {
-                    baseCatalog = applyCatalogCustomizations(baseCatalog, customizations);
-                } else if (error) {
-                    console.log('Catalog customizations query error:', error.message);
-                    // Fall back to localStorage which may have local edits
-                    const saved = localStorage.getItem('av-estimator-catalog');
-                    if (saved) {
-                        try { baseCatalog = JSON.parse(saved); } catch (e) {}
+                    // Re-apply customizations on top of base JSON to get team-wide changes
+                    let baseCatalog = null;
+                    try {
+                        const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
+                        if (response.ok) baseCatalog = await response.json();
+                    } catch (e) {}
+                    if (baseCatalog) {
+                        catalog = applyCatalogCustomizations(baseCatalog, customizations);
                     }
                 }
             } catch (e) {
-                console.log('Failed to load catalog customizations');
-                // Fall back to localStorage
-                const saved = localStorage.getItem('av-estimator-catalog');
-                if (saved) {
-                    try { baseCatalog = JSON.parse(saved); } catch (e2) {}
-                }
-            }
-        } else {
-            // Not on a team — prefer localStorage if it has data (preserves local edits/deletions)
-            const saved = localStorage.getItem('av-estimator-catalog');
-            if (saved) {
-                try {
-                    const localCatalog = JSON.parse(saved);
-                    // Only use local if it has modifications (deletions, edits, etc.)
-                    if (localCatalog.some(c => c.deleted || c.modifiedAt || c.favorite || c.catalogNote)) {
-                        baseCatalog = localCatalog;
-                    }
-                } catch (e) {}
+                console.log('Failed to load catalog customizations, using local');
             }
         }
 
-        setCatalog(baseCatalog);
-        localStorage.setItem('av-estimator-catalog', JSON.stringify(baseCatalog));
+        setCatalog(catalog);
+        localStorage.setItem('av-estimator-catalog', JSON.stringify(catalog));
         setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
         setCatalogDirty(false);
     };
