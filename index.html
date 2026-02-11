@@ -6295,50 +6295,74 @@ function App() {
         setPackages([]);
     };
     
-    // Refresh catalog from remote (re-applies team customizations on top)
+    // Refresh catalog: pull coworker changes from Supabase and merge with local catalog.
+    // localStorage/in-memory catalog is the base; Supabase customizations with newer timestamps win.
     const refreshCatalog = async () => {
+        if (!supabase || !session || !team) {
+            showToast('Catalog is up to date (local only)');
+            return;
+        }
         setCatalogSyncStatus('syncing');
         try {
-            const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-            if (response.ok) {
-                let data = await response.json();
-                // Re-apply team customizations on top of fresh base
-                if (supabase && session && team) {
-                    try {
-                        const { data: customizations } = await supabase
-                            .from('catalog_customizations')
-                            .select('*')
-                            .eq('team_id', team.id)
-                            .limit(5000);
-                        if (customizations?.length > 0) {
-                            data = applyCatalogCustomizations(data, customizations);
-                        }
-                    } catch (e) { console.log('Failed to load customizations during refresh'); }
-                }
-                // Re-apply local edits/deletions that haven't been synced to Supabase
-                const localEdits = {};
-                catalog.forEach(c => {
-                    if (c.deleted || c.modifiedAt || c.favorite || c.catalogNote) {
-                        localEdits[c.id] = c;
-                    }
-                });
-                if (Object.keys(localEdits).length > 0) {
-                    data = data.map(item => {
-                        const local = localEdits[item.id];
-                        if (local) return { ...item, ...local };
-                        return item;
-                    });
-                }
-                setCatalog(data);
-                localStorage.setItem('av-estimator-catalog', JSON.stringify(data));
-                setCatalogSyncStatus('synced');
-                setCatalogDirty(false);
-                showToast(`Catalog updated: ${data.filter(c => !c.deleted).length} items`);
+            // Build a map of current local catalog for merging
+            const localMap = {};
+            catalog.forEach(c => { localMap[c.id] = c; });
+
+            // Fetch team customizations from Supabase
+            const { data: customizations, error } = await supabase
+                .from('catalog_customizations')
+                .select('*')
+                .eq('team_id', team.id)
+                .limit(5000);
+
+            if (error) {
+                console.error('Refresh error:', error);
+                setCatalogSyncStatus('offline');
+                showToast('Could not refresh catalog');
                 return;
             }
-        } catch (e) {}
-        setCatalogSyncStatus('offline');
-        showToast('Could not refresh catalog');
+
+            if (customizations?.length > 0) {
+                // Apply Supabase customizations, but only if they're newer than local edits
+                let updatedCount = 0;
+                customizations.forEach(custom => {
+                    const local = localMap[custom.catalog_item_id];
+                    if (!local) return;
+                    const localTime = local.modifiedAt ? new Date(local.modifiedAt).getTime() : 0;
+                    const remoteTime = custom.updated_at ? new Date(custom.updated_at).getTime() : 0;
+                    // Remote is newer — apply Supabase customization over local
+                    if (remoteTime > localTime) {
+                        let merged = { ...local, favorite: custom.favorite, catalogNote: custom.catalog_note, deleted: !!custom.deleted };
+                        if (custom.custom_fields) {
+                            try {
+                                const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
+                                merged = { ...merged, ...fields };
+                            } catch (e) {}
+                        }
+                        // Preserve the remote timestamp as modifiedAt so future refreshes know
+                        merged.modifiedAt = custom.updated_at;
+                        localMap[custom.catalog_item_id] = merged;
+                        updatedCount++;
+                    }
+                });
+                if (updatedCount > 0) {
+                    const updated = catalog.map(c => localMap[c.id] || c);
+                    setCatalog(updated);
+                    localStorage.setItem('av-estimator-catalog', JSON.stringify(updated));
+                    showToast(`Catalog refreshed: ${updatedCount} item${updatedCount !== 1 ? 's' : ''} updated from team`);
+                } else {
+                    showToast('Catalog is up to date');
+                }
+            } else {
+                showToast('Catalog is up to date');
+            }
+            setCatalogSyncStatus('synced');
+            setCatalogDirty(false);
+        } catch (e) {
+            console.error('Refresh error:', e);
+            setCatalogSyncStatus('offline');
+            showToast('Could not refresh catalog');
+        }
     };
     
     const [selected, setSelected] = useState(null);
@@ -6694,18 +6718,6 @@ function App() {
                     const { error: upsertError } = await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
                     if (upsertError) {
                         console.error('Catalog upsert error:', upsertError);
-                    } else {
-                        // Successfully synced to Supabase — clear modifiedAt so next load
-                        // won't treat these as unsaved local edits overriding Supabase data
-                        const cleaned = catalog.map(c => {
-                            if (c.modifiedAt) {
-                                const { modifiedAt, ...rest } = c;
-                                return rest;
-                            }
-                            return c;
-                        });
-                        setCatalog(cleaned);
-                        localStorage.setItem('av-estimator-catalog', JSON.stringify(cleaned));
                     }
                 }
                 // Don't reload from Supabase after save — our in-memory catalog is the source of truth.
