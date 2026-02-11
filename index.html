@@ -6173,9 +6173,17 @@ function App() {
     const [catalogConflicts, setCatalogConflicts] = useState(null);
     const [packages, setPackages] = useState([]);
     
-    // Load catalog and packages on mount, and reload when team changes
+    // Load catalog on mount. If first-time (no localStorage) and team becomes available, reload to get Supabase customizations.
+    const catalogInitializedRef = React.useRef(false);
     useEffect(() => {
         loadCatalogData();
+    }, []);
+    useEffect(() => {
+        // When team becomes available, reload catalog only if it hasn't been initialized from localStorage
+        // (i.e., first-time setup where we need Supabase customizations)
+        if (team && !catalogInitializedRef.current) {
+            loadCatalogData();
+        }
         loadPackagesData();
     }, [team]);
     
@@ -6201,9 +6209,26 @@ function App() {
     };
 
     const loadCatalogData = async () => {
-        setCatalogSyncStatus('syncing');
+        // localStorage is the primary source of truth for the catalog.
+        // On first ever load (no localStorage), build from av_catalog.json + Supabase.
+        // On subsequent loads (browser refresh), just use localStorage directly.
+        // Use the in-app refresh button to pull latest from Supabase.
+        const saved = localStorage.getItem('av-estimator-catalog');
+        if (saved) {
+            try {
+                const localCatalog = JSON.parse(saved);
+                if (localCatalog?.length > 0) {
+                    setCatalog(localCatalog);
+                    setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
+                    setCatalogDirty(false);
+                    catalogInitializedRef.current = true;
+                    return;
+                }
+            } catch (e) {}
+        }
 
-        // 1. Start with base catalog from av_catalog.json
+        // First-time load: build catalog from base JSON + Supabase customizations
+        setCatalogSyncStatus('syncing');
         let result = null;
         try {
             const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
@@ -6214,20 +6239,15 @@ function App() {
             console.log('Failed to fetch base catalog');
         }
 
-        // Fallback to localStorage or defaults if fetch fails (offline)
         if (!result) {
-            const saved = localStorage.getItem('av-estimator-catalog');
-            if (saved) {
-                try { result = JSON.parse(saved); } catch (e) {}
-            }
-            if (!result) result = DEFAULT_CATALOG;
+            result = DEFAULT_CATALOG;
             setCatalog(result);
             setCatalogSyncStatus('offline');
             setCatalogDirty(false);
             return;
         }
 
-        // 2. If on a team, apply Supabase customizations (team edits from all members)
+        // Apply team customizations from Supabase if available
         if (supabase && session && team) {
             try {
                 const { data: customizations, error } = await supabase
@@ -6241,29 +6261,6 @@ function App() {
             } catch (e) {
                 console.log('Failed to load team customizations');
             }
-        }
-
-        // 3. Merge any unsaved local edits on top (protects work-in-progress)
-        const saved = localStorage.getItem('av-estimator-catalog');
-        if (saved) {
-            try {
-                const localCatalog = JSON.parse(saved);
-                const localEdits = {};
-                let hasEdits = false;
-                localCatalog.forEach(c => {
-                    if (c.deleted || c.modifiedAt || c.favorite || c.catalogNote) {
-                        localEdits[c.id] = c;
-                        hasEdits = true;
-                    }
-                });
-                if (hasEdits) {
-                    result = result.map(item => {
-                        const local = localEdits[item.id];
-                        if (local) return { ...item, ...local };
-                        return item;
-                    });
-                }
-            } catch (e) {}
         }
 
         setCatalog(result);
