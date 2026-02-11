@@ -6694,26 +6694,27 @@ function App() {
                         }),
                         updated_at: new Date().toISOString(),
                     }));
-                    await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
-                }
-                // After successful sync, reload from Supabase to get clean state
-                // This clears stale local overrides so coworker changes aren't blocked
-                try {
-                    const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-                    if (response.ok) {
-                        let fresh = await response.json();
-                        const { data: latestCustom } = await supabase
-                            .from('catalog_customizations')
-                            .select('*')
-                            .eq('team_id', team.id)
-                            .limit(5000);
-                        if (latestCustom?.length > 0) {
-                            fresh = applyCatalogCustomizations(fresh, latestCustom);
-                        }
-                        setCatalog(fresh);
-                        localStorage.setItem('av-estimator-catalog', JSON.stringify(fresh));
+                    const { error: upsertError } = await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
+                    if (upsertError) {
+                        console.error('Catalog upsert error:', upsertError);
+                    } else {
+                        // Successfully synced to Supabase — clear modifiedAt so next load
+                        // won't treat these as unsaved local edits overriding Supabase data
+                        const cleaned = catalog.map(c => {
+                            if (c.modifiedAt) {
+                                const { modifiedAt, ...rest } = c;
+                                return rest;
+                            }
+                            return c;
+                        });
+                        setCatalog(cleaned);
+                        localStorage.setItem('av-estimator-catalog', JSON.stringify(cleaned));
                     }
-                } catch (e) { /* keep current catalog if reload fails */ }
+                }
+                // Don't reload from Supabase after save — our in-memory catalog is the source of truth.
+                // Reloading was causing deleted items to repopulate when the Supabase columns
+                // weren't set up or the round-trip hadn't completed yet.
+                // Coworkers will get updates when they open/refresh the catalog via loadCatalogData.
                 setCatalogSyncStatus('synced');
             } catch (e) {
                 console.error('Catalog sync error:', e);
