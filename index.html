@@ -219,6 +219,7 @@ const Icons = {
     X: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
     DollarSign: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>,
     Clock: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
+    RotateCcw: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>,
     SortAZ: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h7"/><path d="M3 12h5"/><path d="M3 18h3"/><path d="M16 6l4 14"/><path d="M20 6l-4 14"/><path d="M14 14h8"/></svg>,
     Filter: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>,
     Template: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>,
@@ -5673,7 +5674,7 @@ function NewProjectModal({ onClose, onCreate }) {
     );
 }
 
-function EditProjectModal({ project, onClose, onSave }) {
+function EditProjectModal({ project, onClose, onSave, onViewRevision }) {
     const [name, setName] = useState(project.name || '');
     const [client, setClient] = useState(project.client || '');
     const [projectNumber, setProjectNumber] = useState(project.projectNumber || '');
@@ -5755,7 +5756,15 @@ function EditProjectModal({ project, onClose, onSave }) {
                                 <div key={rev.id} style={{ padding: '8px 12px', borderBottom: '1px solid #2f3336', fontSize: '13px' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <span style={{ fontWeight: '600', color: rev.id === project.currentRevision ? '#f59e0b' : '#e7e9ea' }}>{rev.label}</span>
-                                        <span style={{ color: '#6e767d', fontSize: '11px' }}>{new Date(rev.createdAt).toLocaleDateString()}</span>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            {rev.snapshot && onViewRevision && (
+                                                <button
+                                                    onClick={() => onViewRevision(rev.id)}
+                                                    style={{ background: 'none', border: '1px solid #2f3336', borderRadius: '4px', color: '#1d9bf0', fontSize: '11px', padding: '2px 8px', cursor: 'pointer' }}
+                                                >View</button>
+                                            )}
+                                            <span style={{ color: '#6e767d', fontSize: '11px' }}>{new Date(rev.createdAt).toLocaleDateString()}</span>
+                                        </div>
                                     </div>
                                     {rev.createdBy && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '1px' }}>by {rev.createdBy}</div>}
                                     {rev.notes && <div style={{ color: '#8b98a5', fontSize: '12px', marginTop: '2px' }}>{rev.notes}</div>}
@@ -5818,6 +5827,82 @@ function RevisionPromptModal({ project, onClose, onCreateRevision }) {
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
                     <button style={styles.button('secondary')} onClick={onClose}>Cancel</button>
                     <button style={{ ...styles.button('primary'), opacity: !label.trim() ? 0.5 : 1 }} disabled={!label.trim()} onClick={handleSubmit}>Create Revision</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// Revision History Panel — view/restore historical snapshots
+function RevisionHistoryPanel({ project, viewingRevisionId, onViewRevision, onRestoreRevision, onClose }) {
+    const revisions = [...(project.revisions || [])].reverse(); // newest first
+
+    return (
+        <div style={styles.modal} onClick={onClose}>
+            <div style={{ ...styles.modalContent, width: '600px' }} onClick={e => e.stopPropagation()}>
+                <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <Icons.Clock /> Revision History
+                </h2>
+                <p style={{ color: '#8b98a5', fontSize: '13px', marginBottom: '16px' }}>
+                    {revisions.length} revision{revisions.length !== 1 ? 's' : ''}. Click "View" to browse a snapshot in read-only mode.
+                </p>
+                {revisions.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '40px', color: '#6e767d' }}>
+                        No revisions yet. Revisions are created when you submit a proposal or make changes to a submitted project.
+                    </div>
+                ) : (
+                    <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
+                        {revisions.map((rev, idx) => {
+                            const isViewing = rev.id === viewingRevisionId;
+                            const isCurrent = rev.id === project.currentRevision;
+                            const hasSnapshot = !!rev.snapshot;
+                            return (
+                                <div key={rev.id} style={{
+                                    padding: '12px 16px',
+                                    borderBottom: idx < revisions.length - 1 ? '1px solid #2f3336' : 'none',
+                                    backgroundColor: isViewing ? '#3d2e1a' : 'transparent',
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                            <span style={{ fontWeight: '600', color: isCurrent ? '#f59e0b' : '#e7e9ea', fontSize: '14px' }}>
+                                                {rev.label}
+                                            </span>
+                                            {isCurrent && <span style={{ ...styles.badge('orange'), fontSize: '10px' }}>ACTIVE</span>}
+                                            {!hasSnapshot && <span style={{ fontSize: '10px', color: '#6e767d', fontStyle: 'italic' }}>(no snapshot)</span>}
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                                            {hasSnapshot && (
+                                                <>
+                                                    <button
+                                                        style={{ ...styles.smallButton, backgroundColor: isViewing ? '#f59e0b' : '#2f3336', color: isViewing ? '#000' : '#e7e9ea', fontSize: '12px' }}
+                                                        onClick={() => onViewRevision(isViewing ? null : rev.id)}>
+                                                        {isViewing ? 'Viewing' : 'View'}
+                                                    </button>
+                                                    <button
+                                                        style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c', fontSize: '12px' }}
+                                                        onClick={() => {
+                                                            if (confirm(`Restore "${rev.label}"?\n\nThis will replace your current project data with this snapshot. Your current state will be saved as a new revision first.`)) {
+                                                                onRestoreRevision(rev.id);
+                                                            }
+                                                        }}>
+                                                        <Icons.RotateCcw /> Restore
+                                                    </button>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '12px', marginTop: '4px', fontSize: '11px', color: '#6e767d' }}>
+                                        <span>{new Date(rev.createdAt).toLocaleDateString()} {new Date(rev.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                        {rev.createdBy && <span>by {rev.createdBy}</span>}
+                                    </div>
+                                    {rev.notes && <div style={{ color: '#8b98a5', fontSize: '12px', marginTop: '4px' }}>{rev.notes}</div>}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
+                    <button style={styles.button('secondary')} onClick={onClose}>Close</button>
                 </div>
             </div>
         </div>
@@ -6543,6 +6628,9 @@ function App() {
     const [showProjectSettings, setShowProjectSettings] = useState(false);
     const [showRevisionPrompt, setShowRevisionPrompt] = useState(false);
     const [pendingMutation, setPendingMutation] = useState(null);
+    const [viewingRevisionId, setViewingRevisionId] = useState(null);
+    const [showRevisionHistory, setShowRevisionHistory] = useState(false);
+    const [pendingRevisionProjectId, setPendingRevisionProjectId] = useState(null); // For revisions on non-active projects
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
     const [projectFilter, setProjectFilter] = useState('active');
     
@@ -6760,9 +6848,9 @@ function App() {
                 if (loc.children) countInLocations(loc.children);
             });
         };
-        if (project?.locations) countInLocations(project.locations);
+        if (effectiveLocations) countInLocations(effectiveLocations);
         return count;
-    }, [project?.locations]);
+    }, [effectiveLocations]);
     const [compactMode, setCompactMode] = useState(true); // Compact layout toggle - default to compact
     const [showSearch, setShowSearch] = useState(false);
     const [searchTargetLocation, setSearchTargetLocation] = useState(null); // For all-locations mode
@@ -6826,7 +6914,16 @@ function App() {
     
     // Get active project
     const project = projects.find(p => p.id === activeProjectId) || defaultProject;
-    
+
+    // Revision viewing: compute effective data (snapshot or live)
+    const viewingRevision = useMemo(() => {
+        if (!viewingRevisionId || !project.revisions) return null;
+        return project.revisions.find(r => r.id === viewingRevisionId) || null;
+    }, [viewingRevisionId, project.revisions]);
+    const effectiveLocations = viewingRevision?.snapshot?.locations || project.locations;
+    const effectivePackages = viewingRevision?.snapshot?.packages || project.packages;
+    const isViewingHistory = !!viewingRevision;
+
     // Update project helper
     // Check if a mutation requires a revision before proceeding
     const requiresRevision = (proj) => {
@@ -6849,6 +6946,10 @@ function App() {
             showToast('Project is read-only — checked out by ' + (checkedOutBy || 'another user'));
             return;
         }
+        if (isViewingHistory) {
+            showToast('Cannot edit — viewing a historical revision');
+            return;
+        }
         const currentProject = projects.find(p => p.id === activeProjectId);
         if (currentProject && requiresRevision(currentProject)) {
             setPendingMutation(() => () => setProjectDirect(updater));
@@ -6860,25 +6961,48 @@ function App() {
 
     // Handle revision creation from the modal
     const createRevision = ({ label, notes }) => {
+        // Snapshot current state BEFORE the pending mutation is applied
+        // Determine which project to snapshot (active project, or a specific one from dashboard)
+        const targetProjectId = pendingRevisionProjectId || activeProjectId;
+        const currentProject = projects.find(p => p.id === targetProjectId);
+        const snapshot = {
+            locations: JSON.parse(JSON.stringify(currentProject?.locations || [])),
+            packages: JSON.parse(JSON.stringify(currentProject?.packages || [])),
+        };
         const revision = {
             id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
             label,
             notes,
             createdAt: new Date().toISOString(),
             createdBy: session?.user?.email || 'unknown',
+            snapshot,
         };
-        // First, add the revision to the project and set it as current
-        setProjectDirect(p => ({
-            ...p,
-            revisions: [...(p.revisions || []), revision],
-            currentRevision: revision.id,
-        }));
+        // Add the revision to the project and set it as current
+        if (targetProjectId === activeProjectId) {
+            setProjectDirect(p => ({
+                ...p,
+                revisions: [...(p.revisions || []), revision],
+                currentRevision: revision.id,
+            }));
+        } else {
+            // Non-active project (e.g., status change from dashboard)
+            setProjects(prev => prev.map(p =>
+                p.id === targetProjectId ? {
+                    ...p,
+                    revisions: [...(p.revisions || []), revision],
+                    currentRevision: revision.id,
+                    updatedAt: new Date().toISOString(),
+                    updatedBy: session?.user?.email || '',
+                } : p
+            ));
+        }
+        setPendingRevisionProjectId(null);
 
         // Log to Supabase for team changelog
-        if (supabase && session && team && activeProjectId) {
-            const revisionNumber = (project?.revisions?.length || 0) + 1;
+        if (supabase && session && team && targetProjectId) {
+            const revisionNumber = (currentProject?.revisions?.length || 0) + 1;
             supabase.from('project_revisions').insert({
-                project_id: activeProjectId,
+                project_id: targetProjectId,
                 team_id: team.id,
                 user_id: session.user.id,
                 user_email: session.user.email,
@@ -6902,7 +7026,40 @@ function App() {
     const closeRevision = () => {
         setProjectDirect(p => ({ ...p, currentRevision: null }));
     };
-    
+
+    // Restore a historical revision
+    const restoreRevision = (revisionId) => {
+        const currentProject = projects.find(p => p.id === activeProjectId);
+        const targetRevision = currentProject?.revisions?.find(r => r.id === revisionId);
+        if (!targetRevision?.snapshot) return;
+
+        // Snapshot current live state before overwriting
+        const preRestoreSnapshot = {
+            locations: JSON.parse(JSON.stringify(currentProject.locations || [])),
+            packages: JSON.parse(JSON.stringify(currentProject.packages || [])),
+        };
+        const preRestoreRevision = {
+            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+            label: 'Pre-restore snapshot',
+            notes: `State before restoring "${targetRevision.label}"`,
+            createdAt: new Date().toISOString(),
+            createdBy: session?.user?.email || 'unknown',
+            snapshot: preRestoreSnapshot,
+        };
+
+        // Apply: save pre-restore snapshot, then overwrite with target
+        setProjectDirect(p => ({
+            ...p,
+            revisions: [...(p.revisions || []), preRestoreRevision],
+            locations: JSON.parse(JSON.stringify(targetRevision.snapshot.locations)),
+            packages: JSON.parse(JSON.stringify(targetRevision.snapshot.packages || [])),
+            currentRevision: null,
+        }));
+
+        setViewingRevisionId(null);
+        showToast(`Restored "${targetRevision.label}"`);
+    };
+
     // Create new project
     const createProject = (projectData) => {
         const newProject = {
@@ -6977,6 +7134,7 @@ function App() {
         setSelected(null);
         setHistory([]);
         setHistoryIndex(-1);
+        setViewingRevisionId(null);
     };
 
     // Close current project and return to home
@@ -6994,6 +7152,7 @@ function App() {
         setSelected(null);
         setProjectReadOnly(false);
         setCheckedOutBy(null);
+        setViewingRevisionId(null);
     };
     
     // Duplicate a project
@@ -7028,9 +7187,21 @@ function App() {
     };
     
     // Update project status
-    const updateProjectStatus = (projectId, status) => {
+    const updateProjectStatus = (projectId, newStatus) => {
+        const proj = projects.find(p => p.id === projectId);
+        // When first submitting a proposal, prompt for a baseline revision snapshot
+        if (proj && proj.status === 'developing' && newStatus === 'proposal-submitted' && (!proj.revisions || proj.revisions.length === 0)) {
+            setPendingRevisionProjectId(projectId);
+            setPendingMutation(() => () => {
+                setProjects(prev => prev.map(p =>
+                    p.id === projectId ? { ...p, status: newStatus, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
+                ));
+            });
+            setShowRevisionPrompt(true);
+            return;
+        }
         setProjects(prev => prev.map(p =>
-            p.id === projectId ? { ...p, status, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
+            p.id === projectId ? { ...p, status: newStatus, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
         ));
     };
 
@@ -7370,18 +7541,18 @@ function App() {
 
         if (reportHierarchyDepth !== -1) {
             // Grouped export: one file per hierarchy group with merged items
-            const groups = getGroupedByHierarchy(project.locations, reportHierarchyDepth, packages, project.packages || []);
+            const groups = getGroupedByHierarchy(effectiveLocations, reportHierarchyDepth, packages, effectivePackages || []);
             if (groups.length === 0) { showToast('No locations with components to export'); return; }
             groups.forEach((group, index) => {
                 setTimeout(() => {
                     // Merge all items from all locations in this group into a virtual location
                     const mergedItems = [];
                     for (const loc of group.locations) {
-                        const flat = getFlattenedItems(loc, packages, project.packages || []);
+                        const flat = getFlattenedItems(loc, packages, effectivePackages || []);
                         mergedItems.push(...flat);
                     }
                     const virtualLocation = { name: group.name, items: mergedItems };
-                    const wb = generateEsticomWorkbook(virtualLocation, packages, project.packages);
+                    const wb = generateEsticomWorkbook(virtualLocation, packages, effectivePackages);
                     const filename = sanitizeFilename(group.name) + '.xlsx';
                     XLSX.writeFile(wb, filename);
                 }, index * 150);
@@ -7389,11 +7560,11 @@ function App() {
             showToast(`Exporting ${groups.length} Esticom file${groups.length > 1 ? 's' : ''} (grouped)...`);
         } else {
             // Default: per leaf location
-            const locationsWithItems = getLocationsWithItems(project.locations);
+            const locationsWithItems = getLocationsWithItems(effectiveLocations);
             if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
             locationsWithItems.forEach((location, index) => {
                 setTimeout(() => {
-                    const wb = generateEsticomWorkbook(location, packages, project.packages);
+                    const wb = generateEsticomWorkbook(location, packages, effectivePackages);
                     const filename = sanitizeFilename(location.path || location.name) + '.xlsx';
                     XLSX.writeFile(wb, filename);
                 }, index * 150);
@@ -7428,7 +7599,7 @@ function App() {
         const projectName = (project.name || 'Project').replace(/[<>:"/\\|?*]/g, '-').trim();
 
         // Always export as single file, single sheet with all project items consolidated
-        const locationsWithItems = getLocationsWithItems(project.locations);
+        const locationsWithItems = getLocationsWithItems(effectiveLocations);
         if (locationsWithItems.length === 0) { showToast('No locations with components to export'); return; }
         const partMap = buildConsolidatedBOMSheet(locationsWithItems);
         const wb = XLSX.utils.book_new();
@@ -7444,10 +7615,10 @@ function App() {
 
     // Build consolidated BOM data for the in-app view
     const getConsolidatedBOM = () => {
-        const locationsWithItems = getLocationsWithItems(project.locations);
+        const locationsWithItems = getLocationsWithItems(effectiveLocations);
         const partMap = {};
         for (const location of locationsWithItems) {
-            const flatItems = getFlattenedItems(location, packages, project.packages);
+            const flatItems = getFlattenedItems(location, packages, effectivePackages);
             for (const item of flatItems) {
                 const key = item.partNumber || (item.manufacturer + '|' + item.model);
                 if (partMap[key]) {
@@ -7626,7 +7797,7 @@ function App() {
         setExpandedLocations(prev => ({ ...prev, [id]: !prev[id] }));
     };
 
-    const getDepth = (id, locations = project.locations, depth = 0) => {
+    const getDepth = (id, locations = effectiveLocations, depth = 0) => {
         for (const loc of locations) {
             if (loc.id === id) return depth;
             if (loc.children) { const found = getDepth(id, loc.children, depth + 1); if (found !== -1) return found; }
@@ -8212,7 +8383,7 @@ function App() {
     };
 
     const selectedDepth = selected ? getDepth(selected.id) : -1;
-    const projectTotals = (project.locations || []).reduce((acc, loc) => { const t = calculateTotals(loc, packages, project.packages); return { cost: acc.cost + t.cost, labor: acc.labor + t.labor, itemCount: acc.itemCount + t.itemCount }; }, { cost: 0, labor: 0, itemCount: 0 });
+    const projectTotals = (effectiveLocations || []).reduce((acc, loc) => { const t = calculateTotals(loc, packages, effectivePackages); return { cost: acc.cost + t.cost, labor: acc.labor + t.labor, itemCount: acc.itemCount + t.itemCount }; }, { cost: 0, labor: 0, itemCount: 0 });
 
     // Auth gate
     if (authLoading) {
@@ -8299,6 +8470,11 @@ function App() {
                             saveProject(updatedProject);
                             setEditingProject(null);
                         }}
+                        onViewRevision={(revId) => {
+                            openProject(editingProject.id);
+                            setViewingRevisionId(revId);
+                            setEditingProject(null);
+                        }}
                     />
                 )}
                 {showTeamModal && (
@@ -8336,20 +8512,33 @@ function App() {
                             {PROJECT_STATUSES[project.status]?.label}
                         </span>
                     )}
-                    {project.currentRevision && project.revisions && (
+                    {project.revisions?.length > 0 && (
                         <span
-                            style={{ ...styles.badge(''), backgroundColor: '#3d2e1a', color: '#f59e0b', cursor: 'pointer' }}
-                            title="Click to close this revision. Next change will require a new revision."
-                            onClick={() => { if (confirm('Close revision "' + ((project.revisions.find(r => r.id === project.currentRevision) || {}).label || '') + '"? Next change will require a new revision.')) closeRevision(); }}
+                            style={{ ...styles.badge(''), backgroundColor: '#3d2e1a', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                            title="View revision history"
+                            onClick={() => setShowRevisionHistory(true)}
                         >
-                            {(project.revisions.find(r => r.id === project.currentRevision) || {}).label || 'Revision'}
+                            <Icons.Clock />
+                            {project.currentRevision
+                                ? (project.revisions.find(r => r.id === project.currentRevision) || {}).label || 'Revision'
+                                : `${project.revisions.length} Rev${project.revisions.length > 1 ? 's' : ''}`
+                            }
                         </span>
+                    )}
+                    {project.currentRevision && (
+                        <button
+                            style={{ ...styles.iconButton, color: '#f59e0b', padding: '2px', fontSize: '12px' }}
+                            title="Close current revision. Next change will require a new revision."
+                            onClick={() => { if (confirm('Close revision "' + ((project.revisions?.find(r => r.id === project.currentRevision) || {}).label || '') + '"?\nNext change will require a new revision.')) closeRevision(); }}
+                        >
+                            <Icons.X />
+                        </button>
                     )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                     <div style={{ display: 'flex', gap: '4px' }}>
-                        <button style={{ ...styles.iconButton, opacity: historyIndex <= 0 ? 0.3 : 1 }} onClick={undo} disabled={historyIndex <= 0} title="Undo (Ctrl+Z)"><Icons.Undo /></button>
-                        <button style={{ ...styles.iconButton, opacity: historyIndex >= history.length - 1 ? 0.3 : 1 }} onClick={redo} disabled={historyIndex >= history.length - 1} title="Redo (Ctrl+Y)"><Icons.Redo /></button>
+                        <button style={{ ...styles.iconButton, opacity: historyIndex <= 0 || isViewingHistory ? 0.3 : 1 }} onClick={undo} disabled={historyIndex <= 0 || isViewingHistory} title="Undo (Ctrl+Z)"><Icons.Undo /></button>
+                        <button style={{ ...styles.iconButton, opacity: historyIndex >= history.length - 1 || isViewingHistory ? 0.3 : 1 }} onClick={redo} disabled={historyIndex >= history.length - 1 || isViewingHistory} title="Redo (Ctrl+Y)"><Icons.Redo /></button>
                     </div>
                     <div style={{ display: 'flex', gap: '2px', backgroundColor: '#2f3336', borderRadius: '6px', padding: '2px' }}>
                         <button 
@@ -8372,6 +8561,45 @@ function App() {
                     </nav>
                 </div>
             </header>
+
+            {isViewingHistory && viewingRevision && (
+                <div style={{
+                    padding: '10px 24px',
+                    background: 'linear-gradient(90deg, #3d2e1a 0%, #4a3520 100%)',
+                    borderBottom: '2px solid #f59e0b',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    fontSize: '14px',
+                    color: '#f59e0b',
+                    zIndex: 99,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Icons.Clock />
+                        <strong>Viewing: {viewingRevision.label}</strong>
+                        <span style={{ color: '#8b98a5', fontSize: '12px' }}>
+                            ({new Date(viewingRevision.createdAt).toLocaleDateString()})
+                        </span>
+                        <span style={{ ...styles.badge('orange'), fontSize: '10px' }}>READ-ONLY</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                            style={{ ...styles.smallButton, backgroundColor: '#f59e0b', color: '#000', fontWeight: '600' }}
+                            onClick={() => setViewingRevisionId(null)}>
+                            Return to Current
+                        </button>
+                        <button
+                            style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c' }}
+                            onClick={() => {
+                                if (confirm(`Restore "${viewingRevision.label}"?\n\nYour current state will be saved as a revision first.`)) {
+                                    restoreRevision(viewingRevisionId);
+                                }
+                            }}>
+                            <Icons.RotateCcw /> Restore This Revision
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {clipboard.length > 0 && (
                 <div style={styles.clipboardBanner}>
@@ -8418,12 +8646,12 @@ function App() {
                                 </div>
                             </div>
 
-                            <div style={styles.sidebarActions}>
+                            {!isViewingHistory && <div style={styles.sidebarActions}>
                                 <button style={{ ...styles.smallButton, flex: 1 }} onClick={() => setShowAddLocation(true)}><Icons.Plus /> Add Locations</button>
                                 {selected && <button style={{ ...styles.smallButton, flex: 1, backgroundColor: '#1d3a5c', color: '#1d9bf0' }} onClick={() => setShowAddSublocation(true)}><Icons.Plus /> Add Sublocations</button>}
-                            </div>
+                            </div>}
 
-                            {multiSelectLocations.length > 0 && (
+                            {!isViewingHistory && multiSelectLocations.length > 0 && (
                                 <div style={{ ...styles.sidebarActions, borderTop: 'none', paddingTop: 0, flexWrap: 'wrap', gap: '4px' }}>
                                     <button
                                         style={{ ...styles.smallButton, flex: '1 1 auto', backgroundColor: '#1a2e1a', color: '#4ade80', fontSize: '11px' }}
@@ -8448,22 +8676,22 @@ function App() {
                                 </div>
                             )}
 
-                            {selected && (
+                            {!isViewingHistory && selected && (
                                 <div style={{ ...styles.sidebarActions, borderTop: 'none', paddingTop: 0 }}>
                                     <button style={{ ...styles.smallButton, flex: 1, backgroundColor: '#3d2e1a', color: '#ffad1f' }} onClick={() => setShowDuplicate(true)}><Icons.Duplicate /> Duplicate Location</button>
                                 </div>
                             )}
 
-                            {multiSelectLocations.length === 0 && project.locations.length > 0 && (
+                            {multiSelectLocations.length === 0 && effectiveLocations.length > 0 && (
                                 <div style={{ padding: '4px 16px 8px', fontSize: '11px', color: '#6e767d' }}>
                                     💡 Ctrl+Click to multi-select, Shift+Click to select range
                                 </div>
                             )}
 
                             <div style={styles.sidebarContent}>
-                                {project.locations.length > 0 ? (
-                                    <LocationTree 
-                                        locations={project.locations} 
+                                {effectiveLocations.length > 0 ? (
+                                    <LocationTree
+                                        locations={effectiveLocations}
                                         selectedId={selected?.id} 
                                         onSelect={(loc) => { setMultiSelectLocations([]); setSelected(loc); }}
                                         onDelete={(loc) => { setDeleteTargets([loc]); setShowDelete(true); }}
@@ -8487,7 +8715,7 @@ function App() {
                                                     }
                                                     return result;
                                                 };
-                                                const flat = flattenVisible(project.locations);
+                                                const flat = flattenVisible(effectiveLocations);
                                                 const idxA = flat.findIndex(l => l.id === lastMultiSelectLocRef.current);
                                                 const idxB = flat.findIndex(l => l.id === loc.id);
                                                 if (idxA !== -1 && idxB !== -1) {
@@ -8514,7 +8742,7 @@ function App() {
                                         expandedState={expandedLocations}
                                         onToggleExpand={toggleExpand}
                                         catalogPkgs={packages}
-                                        projectPkgs={project.packages}
+                                        projectPkgs={effectivePackages}
                                     />
                                 ) : (
                                     <div style={{ padding: '30px 20px', textAlign: 'center', color: '#6e767d', fontSize: '14px' }}>No locations yet.<br />Click "Add Locations" above.</div>
@@ -8584,7 +8812,7 @@ function App() {
                                     <LocationView
                                         location={selected}
                                         depth={selectedDepth}
-                                        locationPath={getLocationPath(project.locations, selected.id)}
+                                        locationPath={getLocationPath(effectiveLocations, selected.id)}
                                         onUpdate={updateItems}
                                         onSearch={() => setShowSearch(true)}
                                         clipboard={clipboard}
@@ -8602,7 +8830,7 @@ function App() {
                                         compactMode={compactMode}
                                         onAddToCatalog={handleAddToCatalog}
                                         catalogPkgs={packages}
-                                        projectPkgs={project.packages}
+                                        projectPkgs={effectivePackages}
                                         onReplaceItem={(itemIdx) => handleReplaceItem(itemIdx)}
                                         onReplacePackage={(packageName, itemIdx) => handleReplacePackage(packageName, itemIdx)}
                                         searchFilter={workspaceSearch}
@@ -8612,12 +8840,12 @@ function App() {
                                         <div style={{ fontSize: '64px', marginBottom: '16px' }}>🏢</div>
                                         <h3 style={{ color: '#8b98a5', fontSize: '20px' }}>Welcome to AV Estimator</h3>
                                         <p style={{ margin: '0 0 24px 0', maxWidth: '400px' }}>Start by creating your project structure. Add locations like buildings, levels, or areas.</p>
-                                        <button style={styles.button('primary')} onClick={() => setShowAddLocation(true)}><Icons.Plus /> Add Locations</button>
+                                        {!isViewingHistory && <button style={styles.button('primary')} onClick={() => setShowAddLocation(true)}><Icons.Plus /> Add Locations</button>}
                                     </div>
                                 )
                             ) : (
                                 <AllLocationsView
-                                    locations={project.locations}
+                                    locations={effectiveLocations}
                                     onUpdate={(locationId, updater) => {
                                         const loc = findLocation(project.locations, locationId);
                                         if (loc) {
@@ -8656,18 +8884,18 @@ function App() {
                                     onToggleLocationExpand={(locId) => setExpandedWorkspaceLocations(prev => ({ ...prev, [locId]: prev[locId] === false ? true : false }))}
                                     onExpandAllLocations={() => {
                                         const all = {};
-                                        getAllLocationsFlatted(project.locations).forEach(loc => all[loc.id] = true);
+                                        getAllLocationsFlatted(effectiveLocations).forEach(loc => all[loc.id] = true);
                                         setExpandedWorkspaceLocations(all);
                                     }}
                                     onCollapseAllLocations={() => {
                                         const all = {};
-                                        getAllLocationsFlatted(project.locations).forEach(loc => all[loc.id] = false);
+                                        getAllLocationsFlatted(effectiveLocations).forEach(loc => all[loc.id] = false);
                                         setExpandedWorkspaceLocations(all);
                                     }}
                                     compactMode={compactMode}
                                     onAddToCatalog={handleAddToCatalog}
                                     catalogPkgs={packages}
-                                    projectPkgs={project.packages}
+                                    projectPkgs={effectivePackages}
                                     filterMode={viewMode === 'unfinished' ? 'unfinished' : undefined}
                                     onReplaceItem={(itemIdx, locationId) => handleReplaceItem(itemIdx, locationId)}
                                     onReplacePackage={(packageName, itemIdx, locationId) => handleReplacePackage(packageName, itemIdx, locationId)}
@@ -8691,7 +8919,7 @@ function App() {
                         />
                     </section>
                 )}
-                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={project.packages || []} onUpdateCatalogPackages={setPackages} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={project.locations || []} onSyncInstances={syncPackageInstances} /></section>}
+                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={effectivePackages || []} onUpdateCatalogPackages={setPackages} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={effectiveLocations || []} onSyncInstances={syncPackageInstances} /></section>}
                 {tab === 'reports' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
@@ -8703,7 +8931,7 @@ function App() {
                                     onChange={e => setReportHierarchyDepth(parseInt(e.target.value))}
                                     style={{ ...styles.input, width: 'auto', minWidth: '180px', padding: '6px 10px', fontSize: '12px', cursor: 'pointer' }}
                                 >
-                                    {getHierarchyLevels(project.locations).map(level => (
+                                    {getHierarchyLevels(effectiveLocations).map(level => (
                                         <option key={level.depth} value={level.depth}>{level.label}</option>
                                     ))}
                                 </select>
@@ -8802,10 +9030,10 @@ function App() {
                         {showLaborByPhase && (
                             <div style={{ marginTop: '24px' }}>
                                 <LaborByPhaseReport
-                                    locations={project.locations}
+                                    locations={effectiveLocations}
                                     catalogPkgs={packages}
-                                    projectPkgs={project.packages || []}
-                                    hierarchyGroups={reportHierarchyDepth === -1 ? null : getGroupedByHierarchy(project.locations, reportHierarchyDepth, packages, project.packages || [])}
+                                    projectPkgs={effectivePackages || []}
+                                    hierarchyGroups={reportHierarchyDepth === -1 ? null : getGroupedByHierarchy(effectiveLocations, reportHierarchyDepth, packages, effectivePackages || [])}
                                 />
                             </div>
                         )}
@@ -8885,9 +9113,20 @@ function App() {
             {/* Revision Prompt Modal */}
             {showRevisionPrompt && (
                 <RevisionPromptModal
-                    project={project}
-                    onClose={() => { setShowRevisionPrompt(false); setPendingMutation(null); }}
+                    project={pendingRevisionProjectId ? (projects.find(p => p.id === pendingRevisionProjectId) || project) : project}
+                    onClose={() => { setShowRevisionPrompt(false); setPendingMutation(null); setPendingRevisionProjectId(null); }}
                     onCreateRevision={createRevision}
+                />
+            )}
+
+            {/* Revision History Panel */}
+            {showRevisionHistory && (
+                <RevisionHistoryPanel
+                    project={project}
+                    viewingRevisionId={viewingRevisionId}
+                    onViewRevision={(revId) => { setViewingRevisionId(revId); if (revId) setShowRevisionHistory(false); }}
+                    onRestoreRevision={(revId) => { restoreRevision(revId); setShowRevisionHistory(false); }}
+                    onClose={() => setShowRevisionHistory(false)}
                 />
             )}
 
