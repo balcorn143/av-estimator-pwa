@@ -6202,31 +6202,32 @@ function App() {
 
     const loadCatalogData = async () => {
         setCatalogSyncStatus('syncing');
-        let catalog = null;
 
-        // 1. Try localStorage first — it has the user's latest edits/deletions
-        const saved = localStorage.getItem('av-estimator-catalog');
-        let localCatalog = null;
-        if (saved) {
-            try { localCatalog = JSON.parse(saved); } catch (e) {}
-        }
-
-        // 2. If no localStorage, seed from av_catalog.json
-        if (!localCatalog) {
-            try {
-                const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-                if (response.ok) {
-                    localCatalog = await response.json();
-                }
-            } catch (e) {
-                console.log('Failed to fetch remote catalog');
+        // 1. Start with base catalog from av_catalog.json
+        let result = null;
+        try {
+            const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
+            if (response.ok) {
+                result = await response.json();
             }
+        } catch (e) {
+            console.log('Failed to fetch base catalog');
         }
 
-        // 3. Final fallback to defaults
-        catalog = localCatalog || DEFAULT_CATALOG;
+        // Fallback to localStorage or defaults if fetch fails (offline)
+        if (!result) {
+            const saved = localStorage.getItem('av-estimator-catalog');
+            if (saved) {
+                try { result = JSON.parse(saved); } catch (e) {}
+            }
+            if (!result) result = DEFAULT_CATALOG;
+            setCatalog(result);
+            setCatalogSyncStatus('offline');
+            setCatalogDirty(false);
+            return;
+        }
 
-        // 4. For team users, fetch Supabase customizations and merge with local edits
+        // 2. If on a team, apply Supabase customizations (team edits from all members)
         if (supabase && session && team) {
             try {
                 const { data: customizations, error } = await supabase
@@ -6235,53 +6236,38 @@ function App() {
                     .eq('team_id', team.id)
                     .limit(5000);
                 if (!error && customizations?.length > 0) {
-                    // Start from base JSON + Supabase customizations
-                    let baseCatalog = null;
-                    try {
-                        const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-                        if (response.ok) baseCatalog = await response.json();
-                    } catch (e) {}
-                    if (baseCatalog) {
-                        catalog = applyCatalogCustomizations(baseCatalog, customizations);
-                        // Merge local edits on top — local takes priority for items
-                        // that were modified locally but not yet synced to Supabase
-                        if (localCatalog) {
-                            const localEdits = {};
-                            localCatalog.forEach(c => {
-                                if (c.deleted || c.modifiedAt || c.favorite || c.catalogNote) {
-                                    localEdits[c.id] = c;
-                                }
-                            });
-                            if (Object.keys(localEdits).length > 0) {
-                                // Build a set of Supabase-modified item IDs
-                                const supabaseIds = new Set(customizations.map(c => c.catalog_item_id));
-                                // Apply local edits that are NOT already in Supabase
-                                // (if an item is in both, Supabase wins since it's the team source of truth,
-                                //  unless the local modifiedAt is newer)
-                                catalog = catalog.map(item => {
-                                    const local = localEdits[item.id];
-                                    if (local && !supabaseIds.has(item.id)) {
-                                        return { ...item, ...local };
-                                    }
-                                    if (local && supabaseIds.has(item.id) && local.modifiedAt) {
-                                        const custom = customizations.find(c => c.catalog_item_id === item.id);
-                                        if (custom?.updated_at && new Date(local.modifiedAt) > new Date(custom.updated_at)) {
-                                            return { ...item, ...local };
-                                        }
-                                    }
-                                    return item;
-                                });
-                            }
-                        }
-                    }
+                    result = applyCatalogCustomizations(result, customizations);
                 }
             } catch (e) {
-                console.log('Failed to load catalog customizations, using local');
+                console.log('Failed to load team customizations');
             }
         }
 
-        setCatalog(catalog);
-        localStorage.setItem('av-estimator-catalog', JSON.stringify(catalog));
+        // 3. Merge any unsaved local edits on top (protects work-in-progress)
+        const saved = localStorage.getItem('av-estimator-catalog');
+        if (saved) {
+            try {
+                const localCatalog = JSON.parse(saved);
+                const localEdits = {};
+                let hasEdits = false;
+                localCatalog.forEach(c => {
+                    if (c.deleted || c.modifiedAt || c.favorite || c.catalogNote) {
+                        localEdits[c.id] = c;
+                        hasEdits = true;
+                    }
+                });
+                if (hasEdits) {
+                    result = result.map(item => {
+                        const local = localEdits[item.id];
+                        if (local) return { ...item, ...local };
+                        return item;
+                    });
+                }
+            } catch (e) {}
+        }
+
+        setCatalog(result);
+        localStorage.setItem('av-estimator-catalog', JSON.stringify(result));
         setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
         setCatalogDirty(false);
     };
@@ -6710,6 +6696,24 @@ function App() {
                     }));
                     await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
                 }
+                // After successful sync, reload from Supabase to get clean state
+                // This clears stale local overrides so coworker changes aren't blocked
+                try {
+                    const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
+                    if (response.ok) {
+                        let fresh = await response.json();
+                        const { data: latestCustom } = await supabase
+                            .from('catalog_customizations')
+                            .select('*')
+                            .eq('team_id', team.id)
+                            .limit(5000);
+                        if (latestCustom?.length > 0) {
+                            fresh = applyCatalogCustomizations(fresh, latestCustom);
+                        }
+                        setCatalog(fresh);
+                        localStorage.setItem('av-estimator-catalog', JSON.stringify(fresh));
+                    }
+                } catch (e) { /* keep current catalog if reload fails */ }
                 setCatalogSyncStatus('synced');
             } catch (e) {
                 console.error('Catalog sync error:', e);
