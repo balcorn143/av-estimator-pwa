@@ -992,11 +992,11 @@ function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onD
     );
 }
 
-function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, onInsertPkg }) {
+function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, onInsertPkg, replaceMode, replaceIsPackage }) {
     const [search, setSearch] = useState('');
     const [selected, setSelected] = useState([]);
     const [qty, setQty] = useState(1);
-    const [tab, setTab] = useState('components');
+    const [tab, setTab] = useState(replaceIsPackage ? 'packages' : 'components');
     const [filterCategory, setFilterCategory] = useState('');
     const [filterSubcategory, setFilterSubcategory] = useState('');
     const [filterManufacturer, setFilterManufacturer] = useState('');
@@ -1161,21 +1161,23 @@ function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, on
             <div style={{ ...styles.modalContent, width: '750px', maxWidth: '95vw' }} onClick={e => e.stopPropagation()}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <Icons.Search /> Add Components
+                        <Icons.Search /> {replaceMode ? (replaceIsPackage ? 'Replace Package' : 'Replace Item') : 'Add Components'}
                     </h2>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                        <button style={{ ...styles.smallButton, backgroundColor: tab === 'components' ? '#1d9bf0' : '#2f3336' }} onClick={() => setTab('components')}>
+                        {!replaceIsPackage && <button style={{ ...styles.smallButton, backgroundColor: tab === 'components' ? '#1d9bf0' : '#2f3336' }} onClick={() => setTab('components')}>
                             Components {tab === 'components' && `(${results.length})`}
-                        </button>
+                        </button>}
                         <button style={{ ...styles.smallButton, backgroundColor: tab === 'packages' ? '#1d9bf0' : '#2f3336' }} onClick={() => setTab('packages')}>
                             Packages ({pkgResults.length})
                         </button>
-                        <button style={{ ...styles.smallButton, backgroundColor: tab === 'placeholder' ? '#a78bfa' : '#2f3336' }} onClick={() => setTab('placeholder')}>
-                            Placeholder
-                        </button>
-                        <button style={{ ...styles.smallButton, backgroundColor: tab === 'custom' ? '#00ba7c' : '#2f3336' }} onClick={() => setTab('custom')}>
-                            <Icons.Plus /> Custom Item
-                        </button>
+                        {!replaceMode && <>
+                            <button style={{ ...styles.smallButton, backgroundColor: tab === 'placeholder' ? '#a78bfa' : '#2f3336' }} onClick={() => setTab('placeholder')}>
+                                Placeholder
+                            </button>
+                            <button style={{ ...styles.smallButton, backgroundColor: tab === 'custom' ? '#00ba7c' : '#2f3336' }} onClick={() => setTab('custom')}>
+                                <Icons.Plus /> Custom Item
+                            </button>
+                        </>}
                     </div>
                 </div>
                 
@@ -2124,7 +2126,7 @@ function useFlexibleColumns(initialColumns) {
     return { columns, startResize, startDrag, onDragOver, onDragLeave, onDrop, onDragEnd, dragOverIndex };
 }
 
-function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs }) {
+function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage }) {
     const [selectedItems, setSelectedItems] = useState([]);
     const [expandedItems, setExpandedItems] = useState({}); // Track which items are expanded (by index)
     const [expandedPackages, setExpandedPackages] = useState({}); // Track which packages are expanded
@@ -2174,11 +2176,19 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
             case 'system':
                 return <td key={col.id} style={tdStyle}><select value={item.system || ''} onChange={e => changeSystem(itemIdx, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>;
             case 'manufacturer':
-                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px', color: isPackageItem ? '#8b98a5' : undefined }}>{isPackageItem && <span style={{ color: '#6e767d' }}>├ </span>}{item.manufacturer}</td>;
+                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px', color: isPackageItem ? '#8b98a5' : undefined }}>
+                    {isPackageItem && <span style={{ color: '#6e767d' }}>├ </span>}
+                    {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.manufacturer || ''} onChange={e => changeManufacturer(itemIdx, e.target.value)} placeholder="Manufacturer" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} /> : item.manufacturer}
+                </td>;
             case 'model':
-                return <td key={col.id} style={tdStyle}><strong>{item.model}</strong></td>;
+                return <td key={col.id} style={tdStyle}>
+                    {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.model || ''} onChange={e => changeModel(itemIdx, e.target.value)} placeholder="Model / Name" style={{ ...inputStyle, width: '100%', fontWeight: '600' }} /> : <strong>{item.model}</strong>}
+                </td>;
             case 'description':
-                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>{item.description}{hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}</td>;
+                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>
+                    {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.description || ''} onChange={e => changeDescription(itemIdx, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} /> : item.description}
+                    {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
+                </td>;
             case 'unitCost':
                 return <td key={col.id} style={tdStyle}><input type="number" step="0.01" min="0" value={editingCost[itemIdx] !== undefined ? editingCost[itemIdx] : (item.unitCost || 0)} onChange={e => changeUnitCost(itemIdx, e.target.value)} onBlur={() => blurUnitCost(itemIdx)} onFocus={e => { focusUnitCost(itemIdx, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right' }} /></td>;
             case 'unitLabor':
@@ -2368,6 +2378,40 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
         const items = [...location.items];
         items[itemIdx] = { ...items[itemIdx], system };
         onUpdate(location.id, items);
+    };
+
+    const changeManufacturer = (itemIdx, manufacturer) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], manufacturer };
+        onUpdate(location.id, items);
+    };
+    const changeModel = (itemIdx, model) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], model };
+        onUpdate(location.id, items);
+    };
+    const changeDescription = (itemIdx, description) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], description };
+        onUpdate(location.id, items);
+    };
+
+    const addEmptyItem = () => {
+        const newItem = {
+            id: 'placeholder-' + Date.now(),
+            manufacturer: '',
+            model: '',
+            partNumber: '',
+            description: '',
+            category: '',
+            subcategory: '',
+            unitCost: 0,
+            laborHrsPerUnit: 0,
+            uom: 'EA',
+            qty: 1,
+            isPlaceholder: true,
+        };
+        onUpdate(location.id, [...(location.items || []), newItem]);
     };
 
     const [editingCost, setEditingCost] = useState({}); // { [itemIdx]: string }
@@ -2670,6 +2714,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                             {clipboard.length > 0 && <button style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c' }} onClick={handlePaste}><Icons.Clipboard /> Paste ({clipboard.length})</button>}
                             {templates && templates.length > 0 && <button style={{ ...styles.smallButton, backgroundColor: '#2d1a3d', color: '#a78bfa' }} onClick={onApplyTemplate}><Icons.Template /> Apply Template</button>}
                             <button style={styles.button('primary')} onClick={onSearch}><Icons.Plus /> Add</button>
+                            <button style={{ ...styles.smallButton, backgroundColor: '#2a1f0a', color: '#f59e0b', border: '1px solid #f59e0b40' }} onClick={addEmptyItem} title="Add empty placeholder line item"><Icons.Plus /> Empty Item</button>
                         </div>
                     </div>
                     <div style={{ maxHeight: '50vh', overflowY: 'auto', overflowX: 'auto' }}>
@@ -2751,7 +2796,9 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
 
                                             {/* Expanded package items (read-only, computed from definition) */}
                                             {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
-                                                <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}>
+                                                <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
+                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                     {columns.map(col => {
                                                         const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px', color: '#8b98a5', fontSize: '12px' };
                                                         if (col.id === 'checkbox') return <td key={col.id} style={tdS}></td>;
@@ -2805,7 +2852,9 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                                 const isItemSelected = selectedItems.includes(i);
                                                 const itemTotal = calculateItemTotal(item);
                                                 return (
-                                                    <tr key={`legacy-pkg-item-${i}`} style={{ backgroundColor: isItemSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}>
+                                                    <tr key={`legacy-pkg-item-${i}`} style={{ backgroundColor: isItemSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
+                                                        onMouseEnter={e => { if (!isItemSelected) e.currentTarget.style.backgroundColor = '#141c24'; }}
+                                                        onMouseLeave={e => { if (!isItemSelected) e.currentTarget.style.backgroundColor = '#0d1117'; }}>
                                                         {columns.map(col => renderItemCell(col, item, i, {
                                                             isSelected: isItemSelected, hasAccessories: item.accessories?.length > 0, isExpanded: expandedItems[i] !== false, itemTotal,
                                                             isPackageItem: true, pkgColor,
@@ -2828,9 +2877,11 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                     return (
                                         <React.Fragment key={i}>
                                             {/* Main item row */}
-                                            <tr 
-                                                style={{ backgroundColor: isSelected ? '#1d3a5c' : 'transparent', cursor: 'context-menu' }}
-                                                onContextMenu={e => handleContextMenu(e, i, false, null)}>
+                                            <tr
+                                                style={{ backgroundColor: isSelected ? '#1d3a5c' : (item.isPlaceholder ? '#2a1f0a' : 'transparent'), borderLeft: item.isPlaceholder ? '3px solid #f59e0b' : undefined, cursor: 'context-menu' }}
+                                                onContextMenu={e => handleContextMenu(e, i, false, null)}
+                                                onMouseEnter={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = '#1a2332'; }}
+                                                onMouseLeave={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = 'transparent'; }}>
                                                 {columns.map(col => renderItemCell(col, item, i, {
                                                     isSelected, hasAccessories, isExpanded, itemTotal,
                                                     isPackageItem: false, pkgColor: null,
@@ -2840,10 +2891,12 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                             
                                             {/* Accessory rows */}
                                             {hasAccessories && isExpanded && item.accessories.map((acc, accIdx) => (
-                                                <tr 
-                                                    key={`${i}-acc-${accIdx}`} 
+                                                <tr
+                                                    key={`${i}-acc-${accIdx}`}
                                                     style={{ backgroundColor: '#0d1117', cursor: 'context-menu' }}
-                                                    onContextMenu={e => handleContextMenu(e, i, true, accIdx)}>
+                                                    onContextMenu={e => handleContextMenu(e, i, true, accIdx)}
+                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                     {columns.map(col => renderAccessoryCell(col, acc, i, accIdx, { pkgColor: null, changeAccessoryQty, changeAccessoryNotes, removeAccessory }))}
                                                 </tr>
                                             ))}
@@ -2870,6 +2923,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                         {clipboard.length > 0 && <button style={styles.button('success')} onClick={handlePaste}><Icons.Clipboard /> Paste ({clipboard.length})</button>}
                         {templates && templates.length > 0 && <button style={styles.button('purple')} onClick={onApplyTemplate}><Icons.Template /> Apply Template</button>}
                         <button style={styles.button('primary')} onClick={onSearch}><Icons.Plus /> Add Components</button>
+                        <button style={{ ...styles.button('primary'), backgroundColor: '#2a1f0a', color: '#f59e0b', border: '1px solid #f59e0b40' }} onClick={addEmptyItem}><Icons.Plus /> Empty Item</button>
                     </div>
                 </div>
             )}
@@ -2891,7 +2945,16 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                     {contextMenu.isPackage ? (
                         // Package context menu
                         <>
-                            <button 
+                            {onReplacePackage && (
+                                <button
+                                    style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                    onClick={() => { onReplacePackage(contextMenu.packageName, contextMenu.itemIdx); setContextMenu(null); }}>
+                                    <Icons.Sync /> Replace Package
+                                </button>
+                            )}
+                            <button
                                 style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
                                 onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
@@ -2961,7 +3024,16 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                 onClick={() => { onCopy([{ ...location.items[contextMenu.itemIdx] }]); setContextMenu(null); }}>
                                 <Icons.Copy /> Copy
                             </button>
-                            <button 
+                            {onReplaceItem && (
+                                <button
+                                    style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                    onClick={() => { onReplaceItem(contextMenu.itemIdx); setContextMenu(null); }}>
+                                    <Icons.Sync /> Replace Item
+                                </button>
+                            )}
+                            <button
                                 style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
                                 onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
@@ -3823,7 +3895,9 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
                         </thead>
                         <tbody>
                             {filtered.slice(0, 200).map(item => (
-                                <tr key={item.id} style={{ opacity: item.discontinued ? 0.5 : 1, backgroundColor: selectedIds.has(item.id) ? '#1d3a5c' : undefined }} onContextMenu={e => { if (selectedIds.has(item.id)) handleContextMenu(e); }}>
+                                <tr key={item.id} style={{ opacity: item.discontinued ? 0.5 : 1, backgroundColor: selectedIds.has(item.id) ? '#1d3a5c' : undefined }} onContextMenu={e => { if (selectedIds.has(item.id)) handleContextMenu(e); }}
+                                    onMouseEnter={e => { if (!selectedIds.has(item.id)) e.currentTarget.style.backgroundColor = '#1a2332'; }}
+                                    onMouseLeave={e => { if (!selectedIds.has(item.id)) e.currentTarget.style.backgroundColor = ''; }}>
                                     {catalogCols.map(col => {
                                         const inlineInput = { ...styles.inputSmall, width: '100%', padding: '2px 4px', fontSize: compactMode ? '10px' : '11px' };
                                         switch (col.id) {
@@ -4429,7 +4503,10 @@ function AllLocationsView({
     compactMode,
     onAddToCatalog,
     catalogPkgs,
-    projectPkgs
+    projectPkgs,
+    filterMode, // 'unfinished' to show only placeholder items
+    onReplaceItem,
+    onReplacePackage
 }) {
     const [selectedItems, setSelectedItems] = useState({}); // { locationId: [indices] }
     const [expandedItems, setExpandedItems] = useState({}); // { locationId: { itemIdx: bool } }
@@ -4466,7 +4543,12 @@ function AllLocationsView({
     const inputStyle = { ...styles.inputSmall, ...compactStyles.input };
     
     // Get only locations that have items directly in them (not empty parent folders)
-    const allLocations = useMemo(() => getLocationsWithItems(locations), [locations]);
+    const allLocationsRaw = useMemo(() => getLocationsWithItems(locations), [locations]);
+    // Apply filter mode — 'unfinished' shows only locations with placeholder items
+    const allLocations = useMemo(() => {
+        if (filterMode !== 'unfinished') return allLocationsRaw;
+        return allLocationsRaw.filter(loc => loc.items?.some(item => item.isPlaceholder));
+    }, [allLocationsRaw, filterMode]);
     
     // Calculate item totals
     const calculateItemTotal = (item) => {
@@ -4551,6 +4633,46 @@ function AllLocationsView({
             newItems[itemIdx] = { ...newItems[itemIdx], system };
             return newItems;
         });
+    };
+
+    const changeManufacturer = (locationId, itemIdx, manufacturer) => {
+        onUpdate(locationId, (items) => {
+            const newItems = [...items];
+            newItems[itemIdx] = { ...newItems[itemIdx], manufacturer };
+            return newItems;
+        });
+    };
+    const changeModel = (locationId, itemIdx, model) => {
+        onUpdate(locationId, (items) => {
+            const newItems = [...items];
+            newItems[itemIdx] = { ...newItems[itemIdx], model };
+            return newItems;
+        });
+    };
+    const changeDescription = (locationId, itemIdx, description) => {
+        onUpdate(locationId, (items) => {
+            const newItems = [...items];
+            newItems[itemIdx] = { ...newItems[itemIdx], description };
+            return newItems;
+        });
+    };
+
+    const addEmptyItem = (locationId) => {
+        const newItem = {
+            id: 'placeholder-' + Date.now(),
+            manufacturer: '',
+            model: '',
+            partNumber: '',
+            description: '',
+            category: '',
+            subcategory: '',
+            unitCost: 0,
+            laborHrsPerUnit: 0,
+            uom: 'EA',
+            qty: 1,
+            isPlaceholder: true,
+        };
+        onUpdate(locationId, (items) => [...items, newItem]);
     };
 
     const changeAccessoryQty = (locationId, itemIdx, accIdx, q) => {
@@ -4784,19 +4906,19 @@ function AllLocationsView({
     if (allLocations.length === 0) {
         return (
             <div style={styles.emptyState}>
-                <div style={{ fontSize: '64px', marginBottom: '16px' }}>🏢</div>
-                <h3 style={{ color: '#8b98a5', fontSize: '20px' }}>No locations created yet</h3>
-                <p style={{ margin: '0', maxWidth: '400px' }}>Create locations in the sidebar to get started.</p>
+                <div style={{ fontSize: '64px', marginBottom: '16px' }}>{filterMode === 'unfinished' ? '✅' : '🏢'}</div>
+                <h3 style={{ color: '#8b98a5', fontSize: '20px' }}>{filterMode === 'unfinished' ? 'No unfinished items' : 'No locations created yet'}</h3>
+                <p style={{ margin: '0', maxWidth: '400px' }}>{filterMode === 'unfinished' ? 'All placeholder items have been completed or none exist yet.' : 'Create locations in the sidebar to get started.'}</p>
             </div>
         );
     }
-    
+
     return (
         <div style={{ padding: '24px' }}>
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
                 <h2 style={{ margin: 0, fontSize: '24px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <Icons.Layers /> All Locations
+                    {filterMode === 'unfinished' ? <><Icons.AlertTriangle /> Unfinished Items</> : <><Icons.Layers /> All Locations</>}
                     <span style={{ ...styles.badge('blue'), fontSize: '12px' }}>{allLocations.length} locations</span>
                 </h2>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -4883,6 +5005,9 @@ function AllLocationsView({
                                     <button style={{ ...styles.smallButton, marginLeft: 'auto', padding: compactMode ? '4px 8px' : undefined, fontSize: compactMode ? '11px' : undefined }} onClick={() => onSearch(location.id)}>
                                         <Icons.Plus /> Add Component
                                     </button>
+                                    <button style={{ ...styles.smallButton, backgroundColor: '#2a1f0a', color: '#f59e0b', border: '1px solid #f59e0b40', padding: compactMode ? '4px 8px' : undefined, fontSize: compactMode ? '11px' : undefined }} onClick={() => addEmptyItem(location.id)} title="Add empty placeholder">
+                                        <Icons.Plus /> Empty
+                                    </button>
                                 </div>
                                 
                                 {/* Items table */}
@@ -4913,7 +5038,7 @@ function AllLocationsView({
                                         </thead>
                                         <tbody>
                                             {/* Package instances (new format) */}
-                                            {groupedItems.packages.map(pkg => {
+                                            {filterMode !== 'unfinished' && groupedItems.packages.map(pkg => {
                                                 const pkgColor = styles.pkgColor(pkg.name);
                                                 const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
                                                 const isSelected = locationSelected.includes(pkg.idx);
@@ -4943,7 +5068,9 @@ function AllLocationsView({
                                                             <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
                                                         </tr>
                                                         {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
-                                                            <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}>
+                                                            <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
+                                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, color: '#8b98a5', fontSize: '12px' }}>{fmtQty(item.qty)}</td>
@@ -4963,7 +5090,7 @@ function AllLocationsView({
                                             })}
 
                                             {/* Legacy packages (old format) */}
-                                            {groupedItems.legacyPackages.map(pkg => {
+                                            {filterMode !== 'unfinished' && groupedItems.legacyPackages.map(pkg => {
                                                 const pkgColor = styles.pkgColor(pkg.name);
                                                 const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
                                                 return (
@@ -5007,7 +5134,7 @@ function AllLocationsView({
                                             })}
                                             
                                             {/* Standalone items */}
-                                            {groupedItems.standalone.map(({ item, idx: i }) => {
+                                            {groupedItems.standalone.filter(({ item }) => filterMode !== 'unfinished' || item.isPlaceholder).map(({ item, idx: i }) => {
                                                 const isSelected = locationSelected.includes(i);
                                                 const hasAccessories = item.accessories?.length > 0;
                                                 const isExpanded = expandedItems[location.id]?.[i] !== false;
@@ -5015,9 +5142,11 @@ function AllLocationsView({
                                                 
                                                 return (
                                                     <React.Fragment key={i}>
-                                                        <tr 
-                                                            style={{ backgroundColor: isSelected ? '#1d3a5c' : 'transparent' }}
+                                                        <tr
+                                                            style={{ backgroundColor: isSelected ? '#1d3a5c' : (item.isPlaceholder ? '#2a1f0a' : 'transparent'), borderLeft: item.isPlaceholder ? '3px solid #f59e0b' : undefined }}
                                                             onContextMenu={e => handleContextMenu(e, location.id, i)}
+                                                            onMouseEnter={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = '#1a2332'; }}
+                                                            onMouseLeave={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = 'transparent'; }}
                                                         >
                                                             <td style={tdStyle}>
                                                                 <input type="checkbox" checked={isSelected} onChange={e => toggleSelect(location.id, i, e)} />
@@ -5038,10 +5167,14 @@ function AllLocationsView({
                                                             <td style={tdStyle}>
                                                                 <select value={item.system || ''} onChange={e => changeSystem(location.id, i, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select>
                                                             </td>
-                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>{item.manufacturer}</td>
-                                                            <td style={tdStyle}><strong>{item.model}</strong></td>
                                                             <td style={{ ...tdStyle, fontSize: '12px' }}>
-                                                                {item.description}
+                                                                {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.manufacturer || ''} onChange={e => changeManufacturer(location.id, i, e.target.value)} placeholder="Manufacturer" style={{ ...inputStyle, width: '100%', fontSize: '12px' }} /> : item.manufacturer}
+                                                            </td>
+                                                            <td style={tdStyle}>
+                                                                {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.model || ''} onChange={e => changeModel(location.id, i, e.target.value)} placeholder="Model / Name" style={{ ...inputStyle, width: '100%', fontWeight: '600' }} /> : <strong>{item.model}</strong>}
+                                                            </td>
+                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>
+                                                                {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.description || ''} onChange={e => changeDescription(location.id, i, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: '12px' }} /> : item.description}
                                                                 {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
                                                             </td>
                                                             <td style={tdStyle}><input type="number" step="0.01" min="0" value={editingCost[`${location.id}-${i}`] !== undefined ? editingCost[`${location.id}-${i}`] : (item.unitCost || 0)} onChange={e => changeUnitCost(location.id, i, e.target.value)} onBlur={() => blurUnitCost(location.id, i)} onFocus={e => { focusUnitCost(location.id, i, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right' }} /></td>
@@ -5056,7 +5189,9 @@ function AllLocationsView({
                                                             const accLaborKey = `${location.id}-${i}-${accIdx}`;
                                                             return (
                                                             <tr key={`acc-${accIdx}`} style={{ backgroundColor: '#0d1117' }}
-                                                                onContextMenu={e => handleContextMenu(e, location.id, i, true, accIdx)}>
+                                                                onContextMenu={e => handleContextMenu(e, location.id, i, true, accIdx)}
+                                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, paddingLeft: '24px' }}>
@@ -5139,7 +5274,16 @@ function AllLocationsView({
                                     onClick={() => { onCopy([{ ...item }]); setContextMenu(null); }}>
                                     <Icons.Copy /> Copy
                                 </button>
-                                <button 
+                                {onReplaceItem && (
+                                    <button
+                                        style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                        onClick={() => { onReplaceItem(contextMenu.itemIdx, contextMenu.locationId); setContextMenu(null); }}>
+                                        <Icons.Sync /> Replace Item
+                                    </button>
+                                )}
+                                <button
                                     style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
                                     onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
                                     onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
@@ -6366,10 +6510,26 @@ function App() {
     };
     
     const [selected, setSelected] = useState(null);
-    const [viewMode, setViewMode] = useState('single'); // 'single' or 'all'
+    const [viewMode, setViewMode] = useState('single'); // 'single', 'all', or 'unfinished'
+
+    // Count placeholder items across all locations for the Unfinished badge
+    const placeholderCount = useMemo(() => {
+        let count = 0;
+        const countInLocations = (locs) => {
+            if (!locs) return;
+            locs.forEach(loc => {
+                if (loc.items) loc.items.forEach(item => { if (item.isPlaceholder) count++; });
+                if (loc.children) countInLocations(loc.children);
+            });
+        };
+        if (project?.locations) countInLocations(project.locations);
+        return count;
+    }, [project?.locations]);
     const [compactMode, setCompactMode] = useState(true); // Compact layout toggle - default to compact
     const [showSearch, setShowSearch] = useState(false);
     const [searchTargetLocation, setSearchTargetLocation] = useState(null); // For all-locations mode
+    const [replaceContext, setReplaceContext] = useState(null); // { itemIdx, locationId, item, isPackage, packageName }
+    const [showReplaceConfirm, setShowReplaceConfirm] = useState(null); // { replacement, original, locationId, isPackage, count }
     const [showAddLocation, setShowAddLocation] = useState(false);
     const [showAddSublocation, setShowAddSublocation] = useState(false);
     const [showDuplicate, setShowDuplicate] = useState(false);
@@ -7651,6 +7811,87 @@ function App() {
         showToast(`Added "${item.manufacturer} ${item.model}" to catalog`);
     };
     
+    // Replace item handlers
+    const handleReplaceItem = (itemIdx, locationId) => {
+        const loc = findLocation(project.locations, locationId || selected?.id);
+        if (!loc) return;
+        const item = loc.items[itemIdx];
+        setReplaceContext({ itemIdx, locationId: locationId || selected.id, item, isPackage: false });
+        setShowSearch(true);
+    };
+
+    const handleReplacePackage = (packageName, itemIdx, locationId) => {
+        const loc = findLocation(project.locations, locationId || selected?.id);
+        if (!loc) return;
+        const item = loc.items[itemIdx];
+        setReplaceContext({ itemIdx, locationId: locationId || selected.id, item, isPackage: true, packageName });
+        setShowSearch(true);
+    };
+
+    const handleReplaceSelect = (replacement) => {
+        if (!replaceContext) return;
+        setShowSearch(false);
+        // Count how many locations have this item
+        let count = 0;
+        const countInLocations = (locs) => {
+            if (!locs) return;
+            locs.forEach(loc => {
+                if (loc.items) {
+                    loc.items.forEach(item => {
+                        if (replaceContext.isPackage) {
+                            if (item.type === 'package' && item.packageId === replaceContext.item.packageId) count++;
+                        } else {
+                            if (item.id === replaceContext.item.id) count++;
+                        }
+                    });
+                }
+                if (loc.children) countInLocations(loc.children);
+            });
+        };
+        countInLocations(project.locations);
+
+        if (count > 1) {
+            setShowReplaceConfirm({ replacement, original: replaceContext.item, locationId: replaceContext.locationId, isPackage: replaceContext.isPackage, count });
+        } else {
+            executeReplace(replacement, 'this', replaceContext.locationId, replaceContext.isPackage);
+            setReplaceContext(null);
+        }
+    };
+
+    const executeReplace = (replacement, scope, locationId, isPackage) => {
+        const replaceInLocation = (loc) => {
+            if (!loc.items) return loc;
+            const newItems = loc.items.map(item => {
+                if (isPackage) {
+                    if (item.type === 'package' && item.packageId === replaceContext.item.packageId) {
+                        return { ...replacement, qty: item.qty, notes: item.notes };
+                    }
+                } else {
+                    if (item.id === replaceContext.item.id) {
+                        return { ...replacement, qty: item.qty, notes: item.notes, system: item.system, accessories: item.accessories };
+                    }
+                }
+                return item;
+            });
+            return { ...loc, items: newItems };
+        };
+
+        if (scope === 'this') {
+            const loc = findLocation(project.locations, locationId);
+            if (loc) updateItems(locationId, replaceInLocation(loc).items);
+        } else {
+            // Replace in all locations
+            const replaceRecursive = (locs) => locs.map(loc => {
+                let updated = replaceInLocation(loc);
+                if (updated.children) updated = { ...updated, children: replaceRecursive(updated.children) };
+                return updated;
+            });
+            const newLocations = replaceRecursive(project.locations);
+            setProjects(prev => prev.map(p => p.id === project.id ? { ...p, locations: newLocations, updatedAt: new Date().toISOString() } : p));
+        }
+        showToast(`Replaced ${isPackage ? 'package' : 'item'} ${scope === 'all' ? 'in all locations' : ''}`);
+    };
+
     const handleSavePackage = (items, indices) => {
         setPendingPackageItems(items);
         setPendingPackageIndices(indices || []);
@@ -8070,8 +8311,20 @@ function App() {
                                 >
                                     <Icons.ViewAll /> All
                                 </button>
+                                <button
+                                    style={{
+                                        ...styles.smallButton,
+                                        backgroundColor: viewMode === 'unfinished' ? '#f59e0b' : 'transparent',
+                                        color: viewMode === 'unfinished' ? '#000' : '#8b98a5',
+                                        border: '1px solid #30363d'
+                                    }}
+                                    onClick={() => setViewMode('unfinished')}
+                                    title="Unfinished placeholder items"
+                                >
+                                    <Icons.AlertTriangle /> Unfinished {placeholderCount > 0 && <span style={{ ...styles.badge('orange'), marginLeft: '4px', fontSize: '10px' }}>{placeholderCount}</span>}
+                                </button>
                             </div>
-                            
+
                             {viewMode === 'single' ? (
                                 selected ? (
                                     <LocationView
@@ -8096,6 +8349,8 @@ function App() {
                                         onAddToCatalog={handleAddToCatalog}
                                         catalogPkgs={packages}
                                         projectPkgs={project.packages}
+                                        onReplaceItem={(itemIdx) => handleReplaceItem(itemIdx)}
+                                        onReplacePackage={(packageName, itemIdx) => handleReplacePackage(packageName, itemIdx)}
                                     />
                                 ) : (
                                     <div style={styles.emptyState}>
@@ -8158,6 +8413,9 @@ function App() {
                                     onAddToCatalog={handleAddToCatalog}
                                     catalogPkgs={packages}
                                     projectPkgs={project.packages}
+                                    filterMode={viewMode === 'unfinished' ? 'unfinished' : undefined}
+                                    onReplaceItem={(itemIdx, locationId) => handleReplaceItem(itemIdx, locationId)}
+                                    onReplacePackage={(packageName, itemIdx, locationId) => handleReplacePackage(packageName, itemIdx, locationId)}
                                 />
                             )}
                         </section>
@@ -8299,7 +8557,37 @@ function App() {
                 )}
             </main>
 
-            {showSearch && <SearchModal catalog={catalog} packages={packages} projectPackages={project.packages || []} onClose={() => setShowSearch(false)} onInsert={checkDiscontinuedAndInsert} onInsertPkg={insertPkg} />}
+            {showSearch && <SearchModal catalog={catalog} packages={packages} projectPackages={project.packages || []} onClose={() => { setShowSearch(false); setReplaceContext(null); }} onInsert={replaceContext ? (items) => handleReplaceSelect(items[0]) : checkDiscontinuedAndInsert} onInsertPkg={replaceContext?.isPackage ? (pkg) => handleReplaceSelect(pkg) : insertPkg} replaceMode={!!replaceContext} replaceIsPackage={replaceContext?.isPackage} />}
+
+            {/* Replace Confirmation Modal */}
+            {showReplaceConfirm && (
+                <div style={styles.modal} onClick={() => { setShowReplaceConfirm(null); setReplaceContext(null); }}>
+                    <div style={{ ...styles.modalContent, width: '450px' }} onClick={e => e.stopPropagation()}>
+                        <h2 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <Icons.Sync /> Replace {showReplaceConfirm.isPackage ? 'Package' : 'Item'}
+                        </h2>
+                        <p style={{ margin: '0 0 8px 0', color: '#8b98a5', fontSize: '13px' }}>
+                            This {showReplaceConfirm.isPackage ? 'package' : 'item'} exists in <strong style={{ color: '#e7e9ea' }}>{showReplaceConfirm.count} locations</strong>.
+                        </p>
+                        <p style={{ margin: '0 0 20px 0', color: '#8b98a5', fontSize: '13px' }}>
+                            Replace <strong style={{ color: '#e7e9ea' }}>{showReplaceConfirm.original.manufacturer || showReplaceConfirm.original.packageName} {showReplaceConfirm.original.model || ''}</strong> with <strong style={{ color: '#1d9bf0' }}>{showReplaceConfirm.replacement.manufacturer || showReplaceConfirm.replacement.packageName} {showReplaceConfirm.replacement.model || ''}</strong>
+                        </p>
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                            <button style={styles.button('muted')} onClick={() => { setShowReplaceConfirm(null); setReplaceContext(null); }}>Cancel</button>
+                            <button style={styles.button('primary')} onClick={() => {
+                                executeReplace(showReplaceConfirm.replacement, 'this', showReplaceConfirm.locationId, showReplaceConfirm.isPackage);
+                                setShowReplaceConfirm(null);
+                                setReplaceContext(null);
+                            }}>This Instance Only</button>
+                            <button style={{ ...styles.button('primary'), backgroundColor: '#00ba7c' }} onClick={() => {
+                                executeReplace(showReplaceConfirm.replacement, 'all', showReplaceConfirm.locationId, showReplaceConfirm.isPackage);
+                                setShowReplaceConfirm(null);
+                                setReplaceContext(null);
+                            }}>All Locations ({showReplaceConfirm.count})</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Discontinued Item Warning */}
             {discontinuedWarning && (
