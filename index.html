@@ -506,6 +506,19 @@ function getLocationPath(locations, targetId, currentPath = []) {
     return null;
 }
 
+// Check if an item matches a search term (searches across multiple fields)
+function itemMatchesSearch(item, term) {
+    if (!term) return true;
+    const t = term.toLowerCase();
+    return (item.manufacturer?.toLowerCase().includes(t)) ||
+           (item.model?.toLowerCase().includes(t)) ||
+           (item.partNumber?.toLowerCase().includes(t)) ||
+           (item.description?.toLowerCase().includes(t)) ||
+           (item.category?.toLowerCase().includes(t)) ||
+           (item.subcategory?.toLowerCase().includes(t)) ||
+           (item.notes?.toLowerCase().includes(t));
+}
+
 // Get all locations flattened with path info (includes empty locations)
 function getAllLocationsFlatted(locations, parentPath = '') {
     let result = [];
@@ -2049,18 +2062,25 @@ const DEFAULT_COLUMNS = [
     { id: 'extLabor', label: 'Ext. Labor', width: 80 },
 ];
 
-// Hook for resizable and reorderable columns
-function useFlexibleColumns(initialColumns) {
+// Hook for resizable and reorderable columns with optional layout presets
+function useFlexibleColumns(initialColumns, layoutKey) {
     const [columns, setColumns] = useState(initialColumns);
     const resizing = React.useRef(null);
     const dragging = React.useRef(null);
     const [dragOverIndex, setDragOverIndex] = useState(null);
-    
+    const [savedLayouts, setSavedLayouts] = useState(() => {
+        if (!layoutKey) return [];
+        try {
+            const stored = JSON.parse(localStorage.getItem('av-estimator-column-layouts') || '{}');
+            return stored[layoutKey] || [];
+        } catch { return []; }
+    });
+
     const startResize = (colIndex, e) => {
         e.preventDefault();
         e.stopPropagation();
         resizing.current = { colIndex, startX: e.clientX, startWidth: columns[colIndex].width };
-        
+
         const onMouseMove = (e) => {
             if (resizing.current) {
                 const diff = e.clientX - resizing.current.startX;
@@ -2072,24 +2092,24 @@ function useFlexibleColumns(initialColumns) {
                 });
             }
         };
-        
+
         const onMouseUp = () => {
             resizing.current = null;
             document.removeEventListener('mousemove', onMouseMove);
             document.removeEventListener('mouseup', onMouseUp);
         };
-        
+
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
     };
-    
+
     const startDrag = (colIndex, e) => {
         if (columns[colIndex].fixed) return;
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', colIndex.toString());
         dragging.current = colIndex;
     };
-    
+
     const onDragOver = (colIndex, e) => {
         e.preventDefault();
         if (columns[colIndex].fixed) return;
@@ -2097,11 +2117,11 @@ function useFlexibleColumns(initialColumns) {
             setDragOverIndex(colIndex);
         }
     };
-    
+
     const onDragLeave = () => {
         setDragOverIndex(null);
     };
-    
+
     const onDrop = (targetIndex, e) => {
         e.preventDefault();
         if (columns[targetIndex].fixed) return;
@@ -2117,16 +2137,150 @@ function useFlexibleColumns(initialColumns) {
         dragging.current = null;
         setDragOverIndex(null);
     };
-    
+
     const onDragEnd = () => {
         dragging.current = null;
         setDragOverIndex(null);
     };
-    
-    return { columns, startResize, startDrag, onDragOver, onDragLeave, onDrop, onDragEnd, dragOverIndex };
+
+    // Layout preset management (only when layoutKey is provided)
+    const persistLayouts = (layouts) => {
+        if (!layoutKey) return;
+        try {
+            const stored = JSON.parse(localStorage.getItem('av-estimator-column-layouts') || '{}');
+            stored[layoutKey] = layouts;
+            localStorage.setItem('av-estimator-column-layouts', JSON.stringify(stored));
+        } catch {}
+    };
+
+    const saveLayout = (name) => {
+        if (!layoutKey || !name) return;
+        const layout = { name, columns: columns.map(c => ({ id: c.id, label: c.label, width: c.width, fixed: c.fixed })) };
+        const updated = savedLayouts.filter(l => l.name !== name);
+        updated.push(layout);
+        setSavedLayouts(updated);
+        persistLayouts(updated);
+    };
+
+    const loadLayout = (name) => {
+        const layout = savedLayouts.find(l => l.name === name);
+        if (!layout) return;
+        // Merge saved widths/order with current columns (in case new columns were added since save)
+        const savedMap = {};
+        layout.columns.forEach((c, i) => { savedMap[c.id] = { ...c, order: i }; });
+        const merged = [];
+        const used = new Set();
+        // First, add columns in saved order
+        layout.columns.forEach(sc => {
+            const current = columns.find(c => c.id === sc.id) || initialColumns.find(c => c.id === sc.id);
+            if (current) {
+                merged.push({ ...current, width: sc.width });
+                used.add(sc.id);
+            }
+        });
+        // Then add any new columns that weren't in the saved layout
+        initialColumns.forEach(c => {
+            if (!used.has(c.id)) merged.push({ ...c });
+        });
+        setColumns(merged);
+    };
+
+    const deleteLayout = (name) => {
+        if (!layoutKey) return;
+        const updated = savedLayouts.filter(l => l.name !== name);
+        setSavedLayouts(updated);
+        persistLayouts(updated);
+    };
+
+    const resetColumns = () => {
+        setColumns(initialColumns);
+    };
+
+    return { columns, startResize, startDrag, onDragOver, onDragLeave, onDrop, onDragEnd, dragOverIndex, savedLayouts, saveLayout, loadLayout, deleteLayout, resetColumns };
 }
 
-function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage }) {
+// Column Layout Preset Manager component
+function ColumnLayoutManager({ savedLayouts, onSave, onLoad, onDelete, onReset }) {
+    const [showMenu, setShowMenu] = useState(false);
+    const [newName, setNewName] = useState('');
+    const menuRef = React.useRef(null);
+
+    React.useEffect(() => {
+        if (!showMenu) return;
+        const handleClick = (e) => {
+            if (menuRef.current && !menuRef.current.contains(e.target)) {
+                setShowMenu(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, [showMenu]);
+
+    const handleSave = () => {
+        if (newName.trim()) {
+            onSave(newName.trim());
+            setNewName('');
+        }
+    };
+
+    return (
+        <div style={{ position: 'relative', display: 'inline-block' }} ref={menuRef}>
+            <button
+                onClick={() => setShowMenu(!showMenu)}
+                style={{ ...styles.iconButton, padding: '4px 6px', fontSize: '13px', color: '#8b98a5', border: '1px solid #30363d', borderRadius: '4px', backgroundColor: showMenu ? '#1d2d3d' : 'transparent' }}
+                title="Column layouts"
+            >⫶ Layouts</button>
+            {showMenu && (
+                <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 1000, backgroundColor: '#161b22', border: '1px solid #30363d', borderRadius: '8px', padding: '8px', minWidth: '220px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', marginTop: '4px' }}>
+                    <div style={{ fontSize: '11px', color: '#6e767d', marginBottom: '6px', textTransform: 'uppercase', fontWeight: '600' }}>Saved Layouts</div>
+                    {savedLayouts.length === 0 && (
+                        <div style={{ fontSize: '12px', color: '#6e767d', padding: '8px 0', fontStyle: 'italic' }}>No saved layouts</div>
+                    )}
+                    {savedLayouts.map(layout => (
+                        <div key={layout.name} style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '2px' }}>
+                            <button
+                                onClick={() => { onLoad(layout.name); setShowMenu(false); }}
+                                style={{ flex: 1, textAlign: 'left', background: 'none', border: 'none', color: '#e6edf3', fontSize: '13px', padding: '6px 8px', cursor: 'pointer', borderRadius: '4px' }}
+                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1d2d3d'}
+                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >{layout.name}</button>
+                            <button
+                                onClick={() => onDelete(layout.name)}
+                                style={{ background: 'none', border: 'none', color: '#6e767d', cursor: 'pointer', fontSize: '12px', padding: '4px 6px', borderRadius: '4px' }}
+                                onMouseEnter={e => { e.currentTarget.style.color = '#f87171'; e.currentTarget.style.backgroundColor = '#3d1a1a'; }}
+                                onMouseLeave={e => { e.currentTarget.style.color = '#6e767d'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                title={`Delete "${layout.name}"`}
+                            >✕</button>
+                        </div>
+                    ))}
+                    <div style={{ borderTop: '1px solid #30363d', marginTop: '6px', paddingTop: '8px', display: 'flex', gap: '4px' }}>
+                        <input
+                            type="text"
+                            value={newName}
+                            onChange={e => setNewName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleSave(); }}
+                            placeholder="Layout name..."
+                            style={{ ...styles.inputSmall, flex: 1, fontSize: '12px', padding: '4px 8px', backgroundColor: '#0d1117', border: '1px solid #30363d', borderRadius: '4px', color: '#e6edf3' }}
+                        />
+                        <button
+                            onClick={handleSave}
+                            disabled={!newName.trim()}
+                            style={{ ...styles.smallButton, fontSize: '11px', padding: '4px 8px', backgroundColor: newName.trim() ? '#1a3d2e' : '#161b22', color: newName.trim() ? '#00ba7c' : '#6e767d', border: '1px solid #30363d' }}
+                        >Save</button>
+                    </div>
+                    <button
+                        onClick={() => { onReset(); setShowMenu(false); }}
+                        style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#8b98a5', fontSize: '12px', padding: '6px 8px', cursor: 'pointer', borderRadius: '4px', marginTop: '4px' }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1d2d3d'}
+                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                    >↺ Reset to Default</button>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage, searchFilter }) {
     const [selectedItems, setSelectedItems] = useState([]);
     const [expandedItems, setExpandedItems] = useState({}); // Track which items are expanded (by index)
     const [expandedPackages, setExpandedPackages] = useState({}); // Track which packages are expanded
@@ -2141,7 +2295,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
     };
     
     // Flexible columns with resize and reorder
-    const { columns, startResize, startDrag, onDragOver, onDragLeave, onDrop, onDragEnd, dragOverIndex } = useFlexibleColumns(DEFAULT_COLUMNS);
+    const { columns, startResize, startDrag, onDragOver, onDragLeave, onDrop, onDragEnd, dragOverIndex, savedLayouts, saveLayout, loadLayout, deleteLayout, resetColumns } = useFlexibleColumns(DEFAULT_COLUMNS, 'workspace');
     
     // Calculate totals including accessories
     const calculateItemTotal = (item) => {
@@ -2319,7 +2473,34 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
 
         return { packages: packageInstances, legacyPackages: Object.values(legacyPackages), standalone };
     }, [location.items, catalogPkgs, projectPkgs]);
-    
+
+    // Apply search filter to visible items
+    const filteredStandalone = useMemo(() => {
+        if (!searchFilter) return groupedItems.standalone;
+        return groupedItems.standalone.filter(({ item }) => itemMatchesSearch(item, searchFilter));
+    }, [groupedItems.standalone, searchFilter]);
+    const filteredPackages = useMemo(() => {
+        if (!searchFilter) return groupedItems.packages;
+        return groupedItems.packages.filter(pkg =>
+            itemMatchesSearch({ manufacturer: pkg.name, model: '', description: '' }, searchFilter) ||
+            pkg.expandedItems?.some(item => itemMatchesSearch(item, searchFilter))
+        );
+    }, [groupedItems.packages, searchFilter]);
+    const filteredLegacyPackages = useMemo(() => {
+        if (!searchFilter) return groupedItems.legacyPackages;
+        return groupedItems.legacyPackages.filter(pkg =>
+            pkg.items.some(item => itemMatchesSearch(item, searchFilter))
+        );
+    }, [groupedItems.legacyPackages, searchFilter]);
+    // Collect all visible item indices for select-all
+    const visibleIndices = useMemo(() => {
+        const indices = [];
+        filteredPackages.forEach(pkg => indices.push(pkg.idx));
+        filteredLegacyPackages.forEach(pkg => pkg.indices.forEach(i => indices.push(i)));
+        filteredStandalone.forEach(({ idx }) => indices.push(idx));
+        return indices;
+    }, [filteredPackages, filteredLegacyPackages, filteredStandalone]);
+
     const totals = calculateTotals(location, catalogPkgs, projectPkgs);
     // Count line items including accessories and package contents
     const directItems = (location.items || []).reduce((count, item) => {
@@ -2575,7 +2756,19 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
         }
         lastClickedIdx.current = idx;
     };
-    const selectAll = () => { setSelectedItems(selectedItems.length === mainItemCount ? [] : location.items.map((_, i) => i)); };
+    const selectAll = () => {
+        if (searchFilter) {
+            // When filtering, only select/deselect visible items
+            const allVisible = visibleIndices.every(i => selectedItems.includes(i));
+            if (allVisible) {
+                setSelectedItems(prev => prev.filter(i => !visibleIndices.includes(i)));
+            } else {
+                setSelectedItems(prev => [...new Set([...prev, ...visibleIndices])]);
+            }
+        } else {
+            setSelectedItems(selectedItems.length === mainItemCount ? [] : location.items.map((_, i) => i));
+        }
+    };
     const handleCopy = () => { onCopy(selectedItems.map(idx => ({ ...location.items[idx] }))); };
     const handlePaste = () => { onPaste(location.id); setSelectedItems([]); };
     const handleSavePackage = () => { 
@@ -2698,6 +2891,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                             {selectedItems.length > 0 && <span style={styles.badge('blue')}>{selectedItems.length} selected</span>}
                         </div>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            <ColumnLayoutManager savedLayouts={savedLayouts} onSave={saveLayout} onLoad={loadLayout} onDelete={deleteLayout} onReset={resetColumns} />
                             {hasExpandableContent && (
                                 <>
                                     <button style={styles.smallButton} onClick={expandAll} title="Expand All"><Icons.ChevronsDown /> Expand</button>
@@ -2742,7 +2936,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                             onDragEnd={onDragEnd}
                                         >
                                             {col.id === 'checkbox' ? (
-                                                <input type="checkbox" checked={selectedItems.length === mainItemCount && mainItemCount > 0} onChange={selectAll} />
+                                                <input type="checkbox" checked={searchFilter ? (visibleIndices.length > 0 && visibleIndices.every(i => selectedItems.includes(i))) : (selectedItems.length === mainItemCount && mainItemCount > 0)} onChange={selectAll} />
                                             ) : col.label}
                                             {!col.fixed && (
                                                 <div 
@@ -2759,7 +2953,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                             <tbody>
                                 {/* Render packages first */}
                                 {/* Package instances (new format) */}
-                                {groupedItems.packages.map(pkg => {
+                                {filteredPackages.map(pkg => {
                                     const pkgColor = styles.pkgColor(pkg.name);
                                     const isPkgExpanded = expandedPackages[pkg.name] !== false;
                                     const isSelected = selectedItems.includes(pkg.idx);
@@ -2797,7 +2991,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                             {/* Expanded package items (read-only, computed from definition) */}
                                             {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
                                                 <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
-                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#182430'}
                                                     onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                     {columns.map(col => {
                                                         const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px', color: '#8b98a5', fontSize: '12px' };
@@ -2821,7 +3015,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                 })}
 
                                 {/* Legacy packages (old format, backward compat) */}
-                                {groupedItems.legacyPackages.map(pkg => {
+                                {filteredLegacyPackages.map(pkg => {
                                     const pkgColor = styles.pkgColor(pkg.name);
                                     const isPkgExpanded = expandedPackages[pkg.name] !== false;
                                     const allPkgItemsSelected = pkg.indices.every(idx => selectedItems.includes(idx));
@@ -2853,7 +3047,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                                 const itemTotal = calculateItemTotal(item);
                                                 return (
                                                     <tr key={`legacy-pkg-item-${i}`} style={{ backgroundColor: isItemSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
-                                                        onMouseEnter={e => { if (!isItemSelected) e.currentTarget.style.backgroundColor = '#141c24'; }}
+                                                        onMouseEnter={e => { if (!isItemSelected) e.currentTarget.style.backgroundColor = '#182430'; }}
                                                         onMouseLeave={e => { if (!isItemSelected) e.currentTarget.style.backgroundColor = '#0d1117'; }}>
                                                         {columns.map(col => renderItemCell(col, item, i, {
                                                             isSelected: isItemSelected, hasAccessories: item.accessories?.length > 0, isExpanded: expandedItems[i] !== false, itemTotal,
@@ -2868,7 +3062,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                 })}
                                 
                                 {/* Render standalone items */}
-                                {groupedItems.standalone.map(({ item, idx: i }) => {
+                                {filteredStandalone.map(({ item, idx: i }) => {
                                     const isSelected = selectedItems.includes(i);
                                     const hasAccessories = item.accessories?.length > 0;
                                     const isExpanded = expandedItems[i] !== false;
@@ -2880,7 +3074,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                             <tr
                                                 style={{ backgroundColor: isSelected ? '#1d3a5c' : (item.isPlaceholder ? '#2a1f0a' : 'transparent'), borderLeft: item.isPlaceholder ? '3px solid #f59e0b' : undefined, cursor: 'context-menu' }}
                                                 onContextMenu={e => handleContextMenu(e, i, false, null)}
-                                                onMouseEnter={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = '#1a2332'; }}
+                                                onMouseEnter={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = '#1e2d3d'; }}
                                                 onMouseLeave={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = 'transparent'; }}>
                                                 {columns.map(col => renderItemCell(col, item, i, {
                                                     isSelected, hasAccessories, isExpanded, itemTotal,
@@ -2895,7 +3089,7 @@ function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipb
                                                     key={`${i}-acc-${accIdx}`}
                                                     style={{ backgroundColor: '#0d1117', cursor: 'context-menu' }}
                                                     onContextMenu={e => handleContextMenu(e, i, true, accIdx)}
-                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#182430'}
                                                     onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                     {columns.map(col => renderAccessoryCell(col, acc, i, accIdx, { pkgColor: null, changeAccessoryQty, changeAccessoryNotes, removeAccessory }))}
                                                 </tr>
@@ -3610,7 +3804,6 @@ function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGrou
 
 const CATALOG_COLUMNS = [
     { id: 'checkbox', label: '', width: 36, fixed: true },
-    { id: 'favorite', label: '\u2605', width: 40 },
     { id: 'manufacturer', label: 'Manufacturer', width: 130 },
     { id: 'model', label: 'Model', width: 120 },
     { id: 'partNumber', label: 'Part #', width: 130 },
@@ -3622,8 +3815,9 @@ const CATALOG_COLUMNS = [
     { id: 'uom', label: 'UOM', width: 60 },
     { id: 'vendor', label: 'Vendor', width: 110 },
     { id: 'phase', label: 'Phase', width: 90 },
-    { id: 'discontinued', label: 'Disc.', width: 60 },
+    { id: 'discontinued', label: 'Discontinued', width: 100 },
     { id: 'catalogNote', label: 'Note', width: 160 },
+    { id: 'favorite', label: '\u2605', width: 40 },
     { id: 'actions', label: 'Actions', width: 80, fixed: true },
 ];
 
@@ -3644,7 +3838,7 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
     const [bulkEditField, setBulkEditField] = useState(null); // field key to edit
     const [bulkEditValue, setBulkEditValue] = useState('');
 
-    const { columns: catalogCols, startResize: startCatResize } = useFlexibleColumns(CATALOG_COLUMNS);
+    const { columns: catalogCols, startResize: startCatResize, savedLayouts: catLayouts, saveLayout: saveCatLayout, loadLayout: loadCatLayout, deleteLayout: deleteCatLayout, resetColumns: resetCatColumns } = useFlexibleColumns(CATALOG_COLUMNS, 'catalog');
 
     // Inline edit handler - updates a single field on a catalog item
     const updateCatalogField = (itemId, field, value) => {
@@ -3824,6 +4018,7 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
                              <><Icons.Sync /> {syncStatus}</>}
                         </span>
                     )}
+                    <ColumnLayoutManager savedLayouts={catLayouts} onSave={saveCatLayout} onLoad={loadCatLayout} onDelete={deleteCatLayout} onReset={resetCatColumns} />
                     <button
                         style={{ ...styles.smallButton, backgroundColor: editMode ? '#3d2e1a' : '#2f3336', color: editMode ? '#ffad1f' : '#8b98a5' }}
                         onClick={() => setEditMode(!editMode)}
@@ -3896,7 +4091,7 @@ function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog
                         <tbody>
                             {filtered.slice(0, 200).map(item => (
                                 <tr key={item.id} style={{ opacity: item.discontinued ? 0.5 : 1, backgroundColor: selectedIds.has(item.id) ? '#1d3a5c' : undefined }} onContextMenu={e => { if (selectedIds.has(item.id)) handleContextMenu(e); }}
-                                    onMouseEnter={e => { if (!selectedIds.has(item.id)) e.currentTarget.style.backgroundColor = '#1a2332'; }}
+                                    onMouseEnter={e => { if (!selectedIds.has(item.id)) e.currentTarget.style.backgroundColor = '#1e2d3d'; }}
                                     onMouseLeave={e => { if (!selectedIds.has(item.id)) e.currentTarget.style.backgroundColor = ''; }}>
                                     {catalogCols.map(col => {
                                         const inlineInput = { ...styles.inputSmall, width: '100%', padding: '2px 4px', fontSize: compactMode ? '10px' : '11px' };
@@ -4506,7 +4701,8 @@ function AllLocationsView({
     projectPkgs,
     filterMode, // 'unfinished' to show only placeholder items
     onReplaceItem,
-    onReplacePackage
+    onReplacePackage,
+    searchFilter
 }) {
     const [selectedItems, setSelectedItems] = useState({}); // { locationId: [indices] }
     const [expandedItems, setExpandedItems] = useState({}); // { locationId: { itemIdx: bool } }
@@ -4528,7 +4724,7 @@ function AllLocationsView({
         { id: 'extCost', label: 'Ext. $', width: 90 },
         { id: 'extLabor', label: 'Ext. Hrs', width: 80 },
     ];
-    const { columns: allLocCols, startResize: startAllLocResize } = useFlexibleColumns(ALL_LOC_COLUMNS);
+    const { columns: allLocCols, startResize: startAllLocResize, savedLayouts: allLocLayouts, saveLayout: saveAllLocLayout, loadLayout: loadAllLocLayout, deleteLayout: deleteAllLocLayout, resetColumns: resetAllLocColumns } = useFlexibleColumns(ALL_LOC_COLUMNS, 'workspace');
 
     // Compact mode styles
     const compactStyles = {
@@ -4544,11 +4740,23 @@ function AllLocationsView({
     
     // Get only locations that have items directly in them (not empty parent folders)
     const allLocationsRaw = useMemo(() => getLocationsWithItems(locations), [locations]);
-    // Apply filter mode — 'unfinished' shows only locations with placeholder items
+    // Apply filter mode and search filter — hide locations with no matching items
     const allLocations = useMemo(() => {
-        if (filterMode !== 'unfinished') return allLocationsRaw;
-        return allLocationsRaw.filter(loc => loc.items?.some(item => item.isPlaceholder));
-    }, [allLocationsRaw, filterMode]);
+        let filtered = allLocationsRaw;
+        if (filterMode === 'unfinished') {
+            filtered = filtered.filter(loc => loc.items?.some(item => item.isPlaceholder));
+        }
+        if (searchFilter) {
+            const term = searchFilter.toLowerCase();
+            filtered = filtered.filter(loc => loc.items?.some(item => {
+                if (item.type === 'package') {
+                    return item.packageName?.toLowerCase().includes(term);
+                }
+                return itemMatchesSearch(item, searchFilter);
+            }));
+        }
+        return filtered;
+    }, [allLocationsRaw, filterMode, searchFilter]);
     
     // Calculate item totals
     const calculateItemTotal = (item) => {
@@ -4840,13 +5048,16 @@ function AllLocationsView({
         lastClickedRef.current = { locationId, idx };
     };
     
-    const selectAllInLocation = (locationId, itemCount) => {
+    const selectAllInLocation = (locationId, visibleIndices) => {
         setSelectedItems(prev => {
             const current = prev[locationId] || [];
-            if (current.length === itemCount) {
-                return { ...prev, [locationId]: [] };
+            const allVisible = visibleIndices.every(i => current.includes(i));
+            if (allVisible) {
+                // Deselect visible items (keep any hidden selections)
+                return { ...prev, [locationId]: current.filter(i => !visibleIndices.includes(i)) };
             }
-            return { ...prev, [locationId]: Array.from({ length: itemCount }, (_, i) => i) };
+            // Select all visible items (merge with existing selections)
+            return { ...prev, [locationId]: [...new Set([...current, ...visibleIndices])] };
         });
     };
     
@@ -4921,12 +5132,13 @@ function AllLocationsView({
                     {filterMode === 'unfinished' ? <><Icons.AlertTriangle /> Unfinished Items</> : <><Icons.Layers /> All Locations</>}
                     <span style={{ ...styles.badge('blue'), fontSize: '12px' }}>{allLocations.length} locations</span>
                 </h2>
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     {clipboard.length > 0 && (
                         <span style={{ ...styles.badge('green'), padding: '6px 12px' }}>
                             <Icons.Clipboard /> {clipboard.length} copied
                         </span>
                     )}
+                    <ColumnLayoutManager savedLayouts={allLocLayouts} onSave={saveAllLocLayout} onLoad={loadAllLocLayout} onDelete={deleteAllLocLayout} onReset={resetAllLocColumns} />
                     <button style={styles.smallButton} onClick={onExpandAllLocations} title="Expand all locations">
                         <Icons.ChevronsDown /> Expand All
                     </button>
@@ -4943,6 +5155,31 @@ function AllLocationsView({
                 const totals = calculateTotals(location, catalogPkgs, projectPkgs);
                 const locationSelected = selectedItems[location.id] || [];
                 const mainItemCount = (location.items || []).length;
+
+                // Apply search filter
+                const filteredPkgs = searchFilter
+                    ? groupedItems.packages.filter(pkg =>
+                        itemMatchesSearch({ manufacturer: pkg.name, model: '', description: '' }, searchFilter) ||
+                        pkg.expandedItems?.some(item => itemMatchesSearch(item, searchFilter)))
+                    : groupedItems.packages;
+                const filteredLegacyPkgs = searchFilter
+                    ? groupedItems.legacyPackages.filter(pkg =>
+                        pkg.items.some(item => itemMatchesSearch(item, searchFilter)))
+                    : groupedItems.legacyPackages;
+                const filteredStandalone = searchFilter
+                    ? groupedItems.standalone.filter(({ item }) => itemMatchesSearch(item, searchFilter))
+                    : groupedItems.standalone;
+                // Apply unfinished filter on top of search filter
+                const visibleStandalone = filterMode === 'unfinished'
+                    ? filteredStandalone.filter(({ item }) => item.isPlaceholder)
+                    : filteredStandalone;
+                const visiblePkgs = filterMode === 'unfinished' ? [] : filteredPkgs;
+                const visibleLegacyPkgs = filterMode === 'unfinished' ? [] : filteredLegacyPkgs;
+                // Compute visible indices for select-all
+                const visibleIndices = [];
+                visiblePkgs.forEach(pkg => visibleIndices.push(pkg.idx));
+                visibleLegacyPkgs.forEach(pkg => pkg.indices.forEach(i => visibleIndices.push(i)));
+                visibleStandalone.forEach(({ idx }) => visibleIndices.push(idx));
                 
                 return (
                     <div key={location.id} style={{ marginBottom: compactMode ? '8px' : '16px', backgroundColor: '#161b22', borderRadius: compactMode ? '8px' : '12px', border: '1px solid #30363d', overflow: 'hidden' }}>
@@ -5020,8 +5257,8 @@ function AllLocationsView({
                                                         {col.id === 'checkbox' ? (
                                                             <input
                                                                 type="checkbox"
-                                                                checked={locationSelected.length === mainItemCount && mainItemCount > 0}
-                                                                onChange={() => selectAllInLocation(location.id, mainItemCount)}
+                                                                checked={visibleIndices.length > 0 && visibleIndices.every(i => locationSelected.includes(i))}
+                                                                onChange={() => selectAllInLocation(location.id, visibleIndices)}
                                                             />
                                                         ) : col.label}
                                                         {!col.fixed && (
@@ -5038,7 +5275,7 @@ function AllLocationsView({
                                         </thead>
                                         <tbody>
                                             {/* Package instances (new format) */}
-                                            {filterMode !== 'unfinished' && groupedItems.packages.map(pkg => {
+                                            {visiblePkgs.map(pkg => {
                                                 const pkgColor = styles.pkgColor(pkg.name);
                                                 const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
                                                 const isSelected = locationSelected.includes(pkg.idx);
@@ -5069,7 +5306,7 @@ function AllLocationsView({
                                                         </tr>
                                                         {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
                                                             <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
-                                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#182430'}
                                                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={tdStyle}></td>
@@ -5090,7 +5327,7 @@ function AllLocationsView({
                                             })}
 
                                             {/* Legacy packages (old format) */}
-                                            {filterMode !== 'unfinished' && groupedItems.legacyPackages.map(pkg => {
+                                            {visibleLegacyPkgs.map(pkg => {
                                                 const pkgColor = styles.pkgColor(pkg.name);
                                                 const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
                                                 return (
@@ -5134,7 +5371,7 @@ function AllLocationsView({
                                             })}
                                             
                                             {/* Standalone items */}
-                                            {groupedItems.standalone.filter(({ item }) => filterMode !== 'unfinished' || item.isPlaceholder).map(({ item, idx: i }) => {
+                                            {visibleStandalone.map(({ item, idx: i }) => {
                                                 const isSelected = locationSelected.includes(i);
                                                 const hasAccessories = item.accessories?.length > 0;
                                                 const isExpanded = expandedItems[location.id]?.[i] !== false;
@@ -5145,7 +5382,7 @@ function AllLocationsView({
                                                         <tr
                                                             style={{ backgroundColor: isSelected ? '#1d3a5c' : (item.isPlaceholder ? '#2a1f0a' : 'transparent'), borderLeft: item.isPlaceholder ? '3px solid #f59e0b' : undefined }}
                                                             onContextMenu={e => handleContextMenu(e, location.id, i)}
-                                                            onMouseEnter={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = '#1a2332'; }}
+                                                            onMouseEnter={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = '#1e2d3d'; }}
                                                             onMouseLeave={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = 'transparent'; }}
                                                         >
                                                             <td style={tdStyle}>
@@ -5190,7 +5427,7 @@ function AllLocationsView({
                                                             return (
                                                             <tr key={`acc-${accIdx}`} style={{ backgroundColor: '#0d1117' }}
                                                                 onContextMenu={e => handleContextMenu(e, location.id, i, true, accIdx)}
-                                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#141c24'}
+                                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#182430'}
                                                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={tdStyle}></td>
@@ -6511,6 +6748,7 @@ function App() {
     
     const [selected, setSelected] = useState(null);
     const [viewMode, setViewMode] = useState('single'); // 'single', 'all', or 'unfinished'
+    const [workspaceSearch, setWorkspaceSearch] = useState(''); // Filter items in workspace views
 
     // Count placeholder items across all locations for the Unfinished badge
     const placeholderCount = useMemo(() => {
@@ -8286,8 +8524,24 @@ function App() {
 
                         <section style={styles.content}>
                             {/* View mode toggle */}
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px', gap: '4px' }}>
-                                <button 
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px', gap: '4px', alignItems: 'center' }}>
+                                <div style={{ position: 'relative', marginRight: '8px' }}>
+                                    <input
+                                        type="text"
+                                        placeholder="Filter items..."
+                                        value={workspaceSearch}
+                                        onChange={e => setWorkspaceSearch(e.target.value)}
+                                        style={{ ...styles.inputSmall, width: '200px', paddingRight: workspaceSearch ? '28px' : '8px', backgroundColor: '#0d1117', border: '1px solid #30363d', borderRadius: '6px', color: '#e6edf3', fontSize: '13px', padding: '6px 10px' }}
+                                    />
+                                    {workspaceSearch && (
+                                        <button
+                                            onClick={() => setWorkspaceSearch('')}
+                                            style={{ position: 'absolute', right: '6px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#8b98a5', cursor: 'pointer', fontSize: '14px', padding: '2px 4px', lineHeight: 1 }}
+                                            title="Clear filter"
+                                        >✕</button>
+                                    )}
+                                </div>
+                                <button
                                     style={{ 
                                         ...styles.smallButton, 
                                         backgroundColor: viewMode === 'single' ? '#1d9bf0' : 'transparent',
@@ -8351,6 +8605,7 @@ function App() {
                                         projectPkgs={project.packages}
                                         onReplaceItem={(itemIdx) => handleReplaceItem(itemIdx)}
                                         onReplacePackage={(packageName, itemIdx) => handleReplacePackage(packageName, itemIdx)}
+                                        searchFilter={workspaceSearch}
                                     />
                                 ) : (
                                     <div style={styles.emptyState}>
@@ -8416,6 +8671,7 @@ function App() {
                                     filterMode={viewMode === 'unfinished' ? 'unfinished' : undefined}
                                     onReplaceItem={(itemIdx, locationId) => handleReplaceItem(itemIdx, locationId)}
                                     onReplacePackage={(packageName, itemIdx, locationId) => handleReplacePackage(packageName, itemIdx, locationId)}
+                                    searchFilter={workspaceSearch}
                                 />
                             )}
                         </section>
