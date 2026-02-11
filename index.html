@@ -6206,16 +6206,17 @@ function App() {
 
         // 1. Try localStorage first — it has the user's latest edits/deletions
         const saved = localStorage.getItem('av-estimator-catalog');
+        let localCatalog = null;
         if (saved) {
-            try { catalog = JSON.parse(saved); } catch (e) {}
+            try { localCatalog = JSON.parse(saved); } catch (e) {}
         }
 
         // 2. If no localStorage, seed from av_catalog.json
-        if (!catalog) {
+        if (!localCatalog) {
             try {
                 const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
                 if (response.ok) {
-                    catalog = await response.json();
+                    localCatalog = await response.json();
                 }
             } catch (e) {
                 console.log('Failed to fetch remote catalog');
@@ -6223,10 +6224,9 @@ function App() {
         }
 
         // 3. Final fallback to defaults
-        if (!catalog) catalog = DEFAULT_CATALOG;
+        catalog = localCatalog || DEFAULT_CATALOG;
 
-        // 4. For team users, apply Supabase customizations on top of base JSON
-        //    (re-fetch base + overlay so team changes from other members are picked up)
+        // 4. For team users, fetch Supabase customizations and merge with local edits
         if (supabase && session && team) {
             try {
                 const { data: customizations, error } = await supabase
@@ -6235,7 +6235,7 @@ function App() {
                     .eq('team_id', team.id)
                     .limit(5000);
                 if (!error && customizations?.length > 0) {
-                    // Re-apply customizations on top of base JSON to get team-wide changes
+                    // Start from base JSON + Supabase customizations
                     let baseCatalog = null;
                     try {
                         const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
@@ -6243,6 +6243,36 @@ function App() {
                     } catch (e) {}
                     if (baseCatalog) {
                         catalog = applyCatalogCustomizations(baseCatalog, customizations);
+                        // Merge local edits on top — local takes priority for items
+                        // that were modified locally but not yet synced to Supabase
+                        if (localCatalog) {
+                            const localEdits = {};
+                            localCatalog.forEach(c => {
+                                if (c.deleted || c.modifiedAt || c.favorite || c.catalogNote) {
+                                    localEdits[c.id] = c;
+                                }
+                            });
+                            if (Object.keys(localEdits).length > 0) {
+                                // Build a set of Supabase-modified item IDs
+                                const supabaseIds = new Set(customizations.map(c => c.catalog_item_id));
+                                // Apply local edits that are NOT already in Supabase
+                                // (if an item is in both, Supabase wins since it's the team source of truth,
+                                //  unless the local modifiedAt is newer)
+                                catalog = catalog.map(item => {
+                                    const local = localEdits[item.id];
+                                    if (local && !supabaseIds.has(item.id)) {
+                                        return { ...item, ...local };
+                                    }
+                                    if (local && supabaseIds.has(item.id) && local.modifiedAt) {
+                                        const custom = customizations.find(c => c.catalog_item_id === item.id);
+                                        if (custom?.updated_at && new Date(local.modifiedAt) > new Date(custom.updated_at)) {
+                                            return { ...item, ...local };
+                                        }
+                                    }
+                                    return item;
+                                });
+                            }
+                        }
                     }
                 }
             } catch (e) {
