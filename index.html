@@ -5782,16 +5782,17 @@ function EditProjectModal({ project, onClose, onSave, onViewRevision }) {
     );
 }
 
-function RevisionPromptModal({ project, onClose, onCreateRevision }) {
+function RevisionPromptModal({ project, onClose, onCreateRevision, suggestedLabelOverride, manualCreate }) {
     const [label, setLabel] = useState('');
     const [notes, setNotes] = useState('');
 
     const suggestedLabel = useMemo(() => {
+        if (suggestedLabelOverride) return suggestedLabelOverride;
         const revisions = project.revisions || [];
         const revCount = revisions.filter(r => r.label.startsWith('Rev')).length;
         if (revisions.length === 0) return 'Rev 1';
         return 'Rev ' + (revCount + 1);
-    }, [project.revisions]);
+    }, [project.revisions, suggestedLabelOverride]);
 
     useEffect(() => { setLabel(suggestedLabel); }, [suggestedLabel]);
 
@@ -5805,10 +5806,12 @@ function RevisionPromptModal({ project, onClose, onCreateRevision }) {
         <div style={styles.modal} onClick={onClose}>
             <div style={{ ...styles.modalContent, width: '450px' }} onClick={e => e.stopPropagation()}>
                 <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <Icons.Edit /> New Revision Required
+                    <Icons.RotateCcw /> {manualCreate ? 'Create Revision' : 'New Revision Required'}
                 </h2>
                 <p style={{ color: '#8b98a5', fontSize: '14px', marginBottom: '16px' }}>
-                    This project has been submitted. Changes require a revision or change order label.
+                    {manualCreate
+                        ? 'Save the current project state as a revision snapshot. You can view or restore this snapshot later.'
+                        : 'This project has been submitted. Changes require a revision or change order label.'}
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <div>
@@ -5909,7 +5912,7 @@ function RevisionHistoryPanel({ project, viewingRevisionId, onViewRevision, onRe
     );
 }
 
-function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout }) {
+function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, onCreateRevision, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [confirmDelete, setConfirmDelete] = useState(null);
     const [sortCol, setSortCol] = useState('updatedAt');
@@ -6182,6 +6185,13 @@ function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, t
                         onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                         onClick={() => { onDuplicate(contextMenu.project.id); setContextMenu(null); }}>
                         <Icons.Duplicate /> Duplicate
+                    </button>
+                    <button
+                        style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#f59e0b' }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                        onClick={() => { onCreateRevision(contextMenu.project); setContextMenu(null); }}>
+                        <Icons.RotateCcw /> Create Revision
                     </button>
                     <div style={{ borderTop: '1px solid #2f3336', margin: '4px 0' }} />
                     <div style={{ padding: '4px 12px', fontSize: '11px', color: '#6e767d', textTransform: 'uppercase' }}>Set Status</div>
@@ -6631,6 +6641,8 @@ function App() {
     const [viewingRevisionId, setViewingRevisionId] = useState(null);
     const [showRevisionHistory, setShowRevisionHistory] = useState(false);
     const [pendingRevisionProjectId, setPendingRevisionProjectId] = useState(null); // For revisions on non-active projects
+    const [revisionPromptLabelOverride, setRevisionPromptLabelOverride] = useState(null);
+    const [revisionPromptManualCreate, setRevisionPromptManualCreate] = useState(false);
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
     const [projectFilter, setProjectFilter] = useState('active');
     
@@ -7203,6 +7215,51 @@ function App() {
         setProjects(prev => prev.map(p =>
             p.id === projectId ? { ...p, status: newStatus, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
         ));
+    };
+
+    // Create revision from dashboard context menu
+    const handleDashboardCreateRevision = (proj) => {
+        const hasRevisions = proj.revisions && proj.revisions.length > 0;
+        if (!hasRevisions) {
+            // No revisions yet — silently create "Original" snapshot first
+            const originalSnapshot = {
+                locations: JSON.parse(JSON.stringify(proj.locations || [])),
+                packages: JSON.parse(JSON.stringify(proj.packages || [])),
+            };
+            const originalRevision = {
+                id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                label: 'Original',
+                notes: 'Original project state before revisions',
+                createdAt: new Date().toISOString(),
+                createdBy: session?.user?.email || 'unknown',
+                snapshot: originalSnapshot,
+            };
+            // Save Original revision to the project
+            if (proj.id === activeProjectId) {
+                setProjectDirect(p => ({
+                    ...p,
+                    revisions: [...(p.revisions || []), originalRevision],
+                    currentRevision: originalRevision.id,
+                }));
+            } else {
+                setProjects(prev => prev.map(p =>
+                    p.id === proj.id ? {
+                        ...p,
+                        revisions: [...(p.revisions || []), originalRevision],
+                        currentRevision: originalRevision.id,
+                        updatedAt: new Date().toISOString(),
+                        updatedBy: session?.user?.email || '',
+                    } : p
+                ));
+            }
+            showToast('Saved "Original" snapshot');
+        }
+        // Now prompt for the new revision label
+        setPendingRevisionProjectId(proj.id);
+        setPendingMutation(null); // No pending mutation — just creating a revision
+        setRevisionPromptLabelOverride(!hasRevisions ? 'Rev 1' : null);
+        setRevisionPromptManualCreate(true);
+        setShowRevisionPrompt(true);
     };
 
     // Save project (for editing)
@@ -8444,6 +8501,7 @@ function App() {
                     onDuplicate={duplicateProject}
                     onDelete={deleteProject}
                     onUpdateStatus={updateProjectStatus}
+                    onCreateRevision={handleDashboardCreateRevision}
                     getProjectTotals={getProjectTotals}
                     searchTerm={projectSearchTerm}
                     onSearchChange={setProjectSearchTerm}
@@ -9114,8 +9172,10 @@ function App() {
             {showRevisionPrompt && (
                 <RevisionPromptModal
                     project={pendingRevisionProjectId ? (projects.find(p => p.id === pendingRevisionProjectId) || project) : project}
-                    onClose={() => { setShowRevisionPrompt(false); setPendingMutation(null); setPendingRevisionProjectId(null); }}
+                    onClose={() => { setShowRevisionPrompt(false); setPendingMutation(null); setPendingRevisionProjectId(null); setRevisionPromptLabelOverride(null); setRevisionPromptManualCreate(false); }}
                     onCreateRevision={createRevision}
+                    suggestedLabelOverride={revisionPromptLabelOverride}
+                    manualCreate={revisionPromptManualCreate}
                 />
             )}
 
