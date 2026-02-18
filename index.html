@@ -934,7 +934,12 @@ const ProcoreAPI = {
 
     // Get list of projects
     async getProjects(token) {
-        return await this.call('/api/integration/v1/projects', 'GET', null, { token });
+        // Try the standard API first, fall back to integration API
+        try {
+            return await this.call('/api/project', 'GET', null, { token });
+        } catch {
+            return await this.call('/api/integration/v1/projects', 'GET', null, { token });
+        }
     },
 
     // Create a new estimate (proposal) on a project
