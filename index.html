@@ -656,7 +656,7 @@ function generateEsticomWorkbook(location, catalogPkgs, projectPkgs) {
         } else {
             partMap[key] = {
                 qty: item.qty || 0,
-                name: item.description || ((item.manufacturer || '') + ' ' + (item.model || '')).trim(),
+                name: item.model || '',
                 manufacturer: item.manufacturer || '',
                 supplier: item.vendor || '',
                 partNumber: item.partNumber || '',
@@ -673,7 +673,7 @@ function generateEsticomWorkbook(location, catalogPkgs, projectPkgs) {
                 } else {
                     partMap[accKey] = {
                         qty: acc.qty || 0,
-                        name: acc.description || ((acc.manufacturer || '') + ' ' + (acc.model || '')).trim(),
+                        name: acc.model || '',
                         manufacturer: acc.manufacturer || '',
                         supplier: acc.vendor || '',
                         partNumber: acc.partNumber || '',
