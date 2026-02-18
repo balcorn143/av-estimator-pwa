@@ -925,21 +925,21 @@ const ProcoreAPI = {
     // Authenticate with Procore Estimating
     async authenticate(email, password) {
         const data = await this.call('/api/integration/v1/authentication/token', 'GET', null, { email, password });
+        console.log('Procore auth response:', JSON.stringify(data));
         // The auth endpoint returns a token string or object
-        if (typeof data === 'string') return data.replace(/^"|"$/g, '');
-        if (data?.raw) return data.raw.replace(/^"|"$/g, '');
-        if (data?.token) return data.token;
-        throw new Error('Unexpected auth response: ' + JSON.stringify(data));
+        let token;
+        if (typeof data === 'string') token = data.replace(/^"|"$/g, '');
+        else if (data?.raw) token = data.raw.replace(/^"|"$/g, '');
+        else if (data?.token) token = data.token;
+        else throw new Error('Unexpected auth response: ' + JSON.stringify(data));
+        // Verify token works
+        console.log('Procore token (first 20 chars):', token.substring(0, 20) + '...');
+        return token;
     },
 
     // Get list of projects
     async getProjects(token) {
-        // Try the standard API first, fall back to integration API
-        try {
-            return await this.call('/api/project', 'GET', null, { token });
-        } catch {
-            return await this.call('/api/integration/v1/projects', 'GET', null, { token });
-        }
+        return await this.call('/api/integration/v1/projects', 'GET', null, { token });
     },
 
     // Create a new estimate (proposal) on a project
