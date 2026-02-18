@@ -55,6 +55,9 @@ const CONFIG = {
     // Supabase
     SUPABASE_URL: 'https://zyxzkwziyysugomjyidb.supabase.co',
     SUPABASE_ANON_KEY: 'sb_publishable_gnK6VeaiKdehrhoUi-b4Fg_LvsEfjCB',
+
+    // Procore Estimating API proxy
+    PROCORE_PROXY_URL: 'https://zyxzkwziyysugomjyidb.supabase.co/functions/v1/procore-proxy',
 };
 
 // Initialize Supabase client
@@ -890,6 +893,146 @@ function generateProcoreEstimateWorkbook(locations, catalogPkgs, projectPkgs, pr
     sheetOrder.unshift(sheetOrder.pop());
     return wb;
 }
+
+// ============================================================================
+// PROCORE ESTIMATING API HELPER
+// ============================================================================
+const ProcoreAPI = {
+    // Call the Edge Function proxy
+    async call(endpoint, method, body, procoreAuth) {
+        const session = supabase ? (await supabase.auth.getSession()).data.session : null;
+        if (!session) throw new Error('Not authenticated with Supabase');
+        const resp = await fetch(CONFIG.PROCORE_PROXY_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`,
+                'apikey': CONFIG.SUPABASE_ANON_KEY,
+            },
+            body: JSON.stringify({ endpoint, method: method || 'GET', body, procoreAuth }),
+        });
+        if (!resp.ok) {
+            const text = await resp.text();
+            throw new Error(`Proxy error ${resp.status}: ${text}`);
+        }
+        const result = await resp.json();
+        if (result.status === 401) throw new Error('AUTH_EXPIRED');
+        if (result.status === 429) throw new Error('RATE_LIMITED');
+        if (result.status >= 400) throw new Error(`Procore API error ${result.status}: ${JSON.stringify(result.data)}`);
+        return result.data;
+    },
+
+    // Authenticate with Procore Estimating
+    async authenticate(email, password) {
+        const data = await this.call('/api/integration/v1/authentication/token', 'GET', null, { email, password });
+        // The auth endpoint returns a token string or object
+        if (typeof data === 'string') return data.replace(/^"|"$/g, '');
+        if (data?.raw) return data.raw.replace(/^"|"$/g, '');
+        if (data?.token) return data.token;
+        throw new Error('Unexpected auth response: ' + JSON.stringify(data));
+    },
+
+    // Get list of projects
+    async getProjects(token) {
+        return await this.call('/api/integration/v1/projects', 'GET', null, { token });
+    },
+
+    // Create a new estimate (proposal) on a project
+    async createEstimate(token, projectId, name) {
+        return await this.call(`/api/project/${projectId}/proposal`, 'POST', { name, type: 'Estimate' }, { token });
+    },
+
+    // Create a layer group (location) within an estimate
+    async createLayerGroup(token, projectId, proposalId, name, order, parentGroupId) {
+        const body = { name, order: order || 0 };
+        if (parentGroupId) body.parentGroupId = parentGroupId;
+        return await this.call(`/api/project/${projectId}/proposal/${proposalId}/layerGroup`, 'POST', body, { token });
+    },
+
+    // Create a layer (line item) within an estimate
+    async createLayer(token, projectId, proposalId, layerData) {
+        return await this.call(`/api/project/${projectId}/proposal/${proposalId}/layer`, 'POST', layerData, { token });
+    },
+
+    // Map UOM values to Procore-compatible values
+    mapUOM(uom) {
+        const u = (uom || 'EA').toUpperCase();
+        const map = { 'EA': 'Ea', 'FT': 'Ft', 'SQFT': 'SqFt', 'CUFT': 'CuFt', 'LF': 'Ft', 'GAL': 'Gal', 'LB': 'Lb', 'YD': 'Yd', 'M': 'Ea', 'PR': 'Ea', 'SET': 'Ea', 'BOX': 'Ea', 'ROLL': 'Ea', 'LOT': 'Ea' };
+        return map[u] || 'Ea';
+    },
+
+    // Build a layer payload from an app item
+    buildLayerPayload(item, groupId, order) {
+        return {
+            name: item.name || item.model || '',
+            type: 'count',
+            count: item.qty || 0,
+            order: order || 0,
+            groupId: groupId || undefined,
+            costItem: {
+                name: item.name || item.model || '',
+                description: item.description || '',
+                manufacturer: item.manufacturer || '',
+                catalogNumber: item.partNumber || '',
+                supplier: item.supplier || item.vendor || '',
+                unit: item.uom || 'Ea',
+                unitCost: item.unitCost || 0,
+                unitLabor: item.laborHrs || 0,
+                type: 'Part',
+                source: 'Excel',
+                laborTimeUnit: 'Hours',
+                subJobCode: item.phase || '',
+                subJobName: item.phase || '',
+            },
+        };
+    },
+
+    // Consolidate items by part number (same logic as export functions)
+    consolidateItems(flatItems) {
+        const partMap = {};
+        for (const item of flatItems) {
+            const key = item.partNumber || (item.manufacturer + '|' + item.model);
+            if (partMap[key]) {
+                partMap[key].qty += (item.qty || 0);
+            } else {
+                partMap[key] = {
+                    qty: item.qty || 0,
+                    name: item.model || '',
+                    description: item.description || '',
+                    manufacturer: item.manufacturer || '',
+                    partNumber: item.partNumber || '',
+                    vendor: item.vendor || '',
+                    uom: this.mapUOM(item.uom),
+                    unitCost: item.unitCost || 0,
+                    laborHrs: item.laborHrsPerUnit || 0,
+                    phase: item.phase || '',
+                };
+            }
+            if (item.accessories) {
+                for (const acc of item.accessories) {
+                    const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                    if (partMap[accKey]) {
+                        partMap[accKey].qty += (acc.qty || 0);
+                    } else {
+                        partMap[accKey] = {
+                            qty: acc.qty || 0,
+                            name: acc.model || '',
+                            description: acc.description || '',
+                            manufacturer: acc.manufacturer || '',
+                            partNumber: acc.partNumber || '',
+                            vendor: acc.vendor || '',
+                            uom: this.mapUOM(acc.uom),
+                            unitCost: acc.unitCost || 0,
+                            laborHrs: acc.laborHrsPerUnit || 0,
+                            phase: acc.phase || '',
+                        };
+                    }
+                }
+            }
+        }
+        return Object.values(partMap);
+    },
+};
 
 function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onDuplicate, onMoveUp, onMoveDown, onPromote, onDemote, multiSelect, onMultiSelectToggle, depth = 0, searchTerm, expandedState, onToggleExpand, catalogPkgs, projectPkgs }) {
     const [contextMenu, setContextMenu] = useState(null);
@@ -6397,6 +6540,423 @@ function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, t
     );
 }
 
+// ============================================================================
+// PROCORE PUSH MODAL — Push estimate directly to Procore Estimating via API
+// ============================================================================
+function ProcorePushModal({ onClose, locations, catalogPkgs, projectPkgs, projectName, showToast }) {
+    const [step, setStep] = useState('auth'); // auth | select | push
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [rememberCreds, setRememberCreds] = useState(false);
+    const [token, setToken] = useState(null);
+    const [projects, setProjects] = useState([]);
+    const [selectedProject, setSelectedProject] = useState(null);
+    const [estimateName, setEstimateName] = useState('');
+    const [projectSearch, setProjectSearch] = useState('');
+    const [authLoading, setAuthLoading] = useState(false);
+    const [authError, setAuthError] = useState('');
+    const [pushState, setPushState] = useState('idle'); // idle | pushing | done | error
+    const [progress, setProgress] = useState({ current: 0, total: 0, text: '' });
+    const [pushError, setPushError] = useState('');
+    const abortRef = useRef(false);
+
+    // Load saved credentials
+    useEffect(() => {
+        try {
+            const saved = localStorage.getItem('av-estimator-procore-creds');
+            if (saved) {
+                const { email: e, password: p } = JSON.parse(saved);
+                setEmail(e || '');
+                setPassword(p || '');
+                setRememberCreds(true);
+            }
+        } catch {}
+    }, []);
+
+    // Collect all locations with their hierarchy for the push
+    const collectLocationTree = useCallback(() => {
+        const results = [];
+        const walk = (locs, parentPath, depth) => {
+            for (let i = 0; i < locs.length; i++) {
+                const loc = locs[i];
+                const path = parentPath ? `${parentPath} > ${loc.name}` : loc.name;
+                const flatItems = getFlattenedItems(loc, catalogPkgs, projectPkgs);
+                const consolidated = ProcoreAPI.consolidateItems(flatItems);
+                results.push({
+                    id: loc.id,
+                    name: loc.name,
+                    path,
+                    depth,
+                    order: i,
+                    items: consolidated,
+                    hasChildren: loc.children && loc.children.length > 0,
+                    children: loc.children || [],
+                });
+                if (loc.children && loc.children.length > 0) {
+                    walk(loc.children, path, depth + 1);
+                }
+            }
+        };
+        walk(locations, '', 0);
+        return results;
+    }, [locations, catalogPkgs, projectPkgs]);
+
+    const locationTree = useMemo(() => collectLocationTree(), [collectLocationTree]);
+    const totalItems = useMemo(() => locationTree.reduce((sum, loc) => sum + loc.items.length, 0), [locationTree]);
+    const totalLocations = locationTree.length;
+
+    // Step 1: Authenticate
+    const handleAuth = async () => {
+        setAuthLoading(true);
+        setAuthError('');
+        try {
+            const tok = await ProcoreAPI.authenticate(email, password);
+            setToken(tok);
+            if (rememberCreds) {
+                localStorage.setItem('av-estimator-procore-creds', JSON.stringify({ email, password }));
+            } else {
+                localStorage.removeItem('av-estimator-procore-creds');
+            }
+            // Load projects
+            const projs = await ProcoreAPI.getProjects(tok);
+            setProjects(Array.isArray(projs) ? projs : []);
+            const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            setEstimateName(`${projectName || 'Estimate'} - ${today}`);
+            setStep('select');
+        } catch (err) {
+            setAuthError(err.message === 'AUTH_EXPIRED' ? 'Invalid email or password' : err.message);
+        } finally {
+            setAuthLoading(false);
+        }
+    };
+
+    // Step 3: Push estimate to Procore
+    const handlePush = async () => {
+        setPushState('pushing');
+        setPushError('');
+        abortRef.current = false;
+        let itemsPushed = 0;
+        const totalToPush = totalItems + totalLocations + 1; // +1 for estimate creation
+
+        const updateProgress = (text) => {
+            itemsPushed++;
+            setProgress({ current: itemsPushed, total: totalToPush, text });
+        };
+
+        // Retry wrapper for rate limiting
+        const withRetry = async (fn, retries = 3) => {
+            for (let attempt = 0; attempt < retries; attempt++) {
+                try {
+                    return await fn();
+                } catch (err) {
+                    if (err.message === 'RATE_LIMITED' && attempt < retries - 1) {
+                        const delay = Math.pow(2, attempt) * 1000;
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw err;
+                }
+            }
+        };
+
+        try {
+            // Create the estimate
+            updateProgress('Creating estimate...');
+            const estimate = await withRetry(() =>
+                ProcoreAPI.createEstimate(token, selectedProject.id, estimateName)
+            );
+            const proposalId = estimate.id || estimate.proposalId;
+            if (!proposalId) throw new Error('Failed to get estimate ID from response');
+
+            // Walk location tree and create groups + items
+            const groupIdMap = {}; // loc.id -> procore group id
+
+            const pushLocations = async (locs, parentGroupId) => {
+                for (let i = 0; i < locs.length; i++) {
+                    if (abortRef.current) throw new Error('Cancelled');
+                    const loc = locs[i];
+
+                    // Create layer group for this location
+                    updateProgress(`Creating location: ${loc.name}`);
+                    const group = await withRetry(() =>
+                        ProcoreAPI.createLayerGroup(token, selectedProject.id, proposalId, loc.name, i, parentGroupId)
+                    );
+                    const groupId = group.id || group.groupId;
+                    groupIdMap[loc.id] = groupId;
+                    await new Promise(r => setTimeout(r, 50));
+
+                    // Get consolidated items for this specific location
+                    const flatItems = getFlattenedItems(loc, catalogPkgs, projectPkgs);
+                    const consolidated = ProcoreAPI.consolidateItems(flatItems);
+
+                    // Create layers for items (only if this location has items)
+                    for (let j = 0; j < consolidated.length; j++) {
+                        if (abortRef.current) throw new Error('Cancelled');
+                        const item = consolidated[j];
+                        updateProgress(`${loc.name}: ${item.name || item.partNumber}`);
+                        const layerPayload = ProcoreAPI.buildLayerPayload(item, groupId, j);
+                        try {
+                            await withRetry(() =>
+                                ProcoreAPI.createLayer(token, selectedProject.id, proposalId, layerPayload)
+                            );
+                        } catch (err) {
+                            if (err.message && err.message.includes('400')) {
+                                console.warn('Skipped item due to validation error:', item.name, err.message);
+                                continue;
+                            }
+                            throw err;
+                        }
+                        await new Promise(r => setTimeout(r, 50));
+                    }
+
+                    // Recurse into children
+                    if (loc.children && loc.children.length > 0) {
+                        await pushLocations(loc.children, groupId);
+                    }
+                }
+            };
+
+            // Walk the top-level locations
+            await pushLocations(locations, null);
+
+            setPushState('done');
+            showToast('Estimate pushed to Procore Estimating');
+        } catch (err) {
+            if (err.message === 'Cancelled') {
+                setPushState('idle');
+                setPushError('Push cancelled. Partial data may exist in Procore.');
+            } else if (err.message === 'AUTH_EXPIRED') {
+                setPushState('idle');
+                setPushError('Session expired. Please re-authenticate.');
+                setToken(null);
+                setStep('auth');
+            } else {
+                setPushState('error');
+                setPushError(err.message);
+            }
+        }
+    };
+
+    const filteredProjects = useMemo(() => {
+        if (!projectSearch) return projects;
+        const q = projectSearch.toLowerCase();
+        return projects.filter(p =>
+            (p.name || '').toLowerCase().includes(q) ||
+            (p.projectNumber || '').toLowerCase().includes(q) ||
+            (p.address || '').toLowerCase().includes(q)
+        );
+    }, [projects, projectSearch]);
+
+    const progressPct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+
+    return (
+        <div style={styles.modal} onClick={onClose}>
+            <div style={{ ...styles.modalContent, width: '520px' }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ margin: 0, color: '#e7e9ea', fontSize: '18px' }}>
+                        Push to Procore Estimating
+                    </h3>
+                    <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#6e767d', fontSize: '20px', cursor: 'pointer' }}>&times;</button>
+                </div>
+
+                {/* Step indicators */}
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
+                    {['Connect', 'Select Project', 'Push'].map((label, i) => {
+                        const stepNames = ['auth', 'select', 'push'];
+                        const isActive = step === stepNames[i];
+                        const isPast = stepNames.indexOf(step) > i;
+                        return (
+                            <div key={label} style={{
+                                flex: 1, textAlign: 'center', padding: '6px', borderRadius: '6px', fontSize: '12px', fontWeight: '600',
+                                backgroundColor: isActive ? 'rgba(29,155,240,0.2)' : isPast ? 'rgba(0,186,124,0.15)' : '#0f1419',
+                                color: isActive ? '#1d9bf0' : isPast ? '#00ba7c' : '#6e767d',
+                                border: `1px solid ${isActive ? '#1d9bf0' : isPast ? '#00ba7c' : '#2f3336'}`,
+                            }}>
+                                {isPast ? '\u2713 ' : ''}{label}
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {/* Step 1: Auth */}
+                {step === 'auth' && (
+                    <div>
+                        <p style={{ color: '#8b949e', fontSize: '13px', marginBottom: '16px' }}>
+                            Enter your Procore Estimating (Esticom) credentials.
+                        </p>
+                        <input
+                            type="email" placeholder="Email" value={email}
+                            onChange={e => setEmail(e.target.value)}
+                            style={{ ...styles.input, marginBottom: '10px' }}
+                            onKeyDown={e => e.key === 'Enter' && email && password && handleAuth()}
+                        />
+                        <input
+                            type="password" placeholder="Password" value={password}
+                            onChange={e => setPassword(e.target.value)}
+                            style={{ ...styles.input, marginBottom: '10px' }}
+                            onKeyDown={e => e.key === 'Enter' && email && password && handleAuth()}
+                        />
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#8b949e', fontSize: '13px', marginBottom: '16px', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={rememberCreds} onChange={e => setRememberCreds(e.target.checked)} />
+                            Remember credentials
+                        </label>
+                        {authError && (
+                            <p style={{ color: '#f85149', fontSize: '13px', marginBottom: '12px' }}>{authError}</p>
+                        )}
+                        <button
+                            onClick={handleAuth}
+                            disabled={!email || !password || authLoading}
+                            style={{ ...styles.button('primary'), width: '100%', justifyContent: 'center', opacity: (!email || !password || authLoading) ? 0.5 : 1 }}
+                        >
+                            {authLoading ? 'Connecting...' : 'Connect'}
+                        </button>
+                    </div>
+                )}
+
+                {/* Step 2: Select Project */}
+                {step === 'select' && (
+                    <div>
+                        <input
+                            type="text" placeholder="Search projects..." value={projectSearch}
+                            onChange={e => setProjectSearch(e.target.value)}
+                            style={{ ...styles.input, marginBottom: '10px' }}
+                        />
+                        <div style={{ maxHeight: '250px', overflowY: 'auto', border: '1px solid #2f3336', borderRadius: '8px', marginBottom: '12px' }}>
+                            {filteredProjects.length === 0 && (
+                                <p style={{ color: '#6e767d', textAlign: 'center', padding: '20px', fontSize: '13px' }}>
+                                    {projects.length === 0 ? 'No projects found' : 'No matching projects'}
+                                </p>
+                            )}
+                            {filteredProjects.map(p => (
+                                <div
+                                    key={p.id}
+                                    onClick={() => setSelectedProject(p)}
+                                    style={{
+                                        padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid #2f3336',
+                                        backgroundColor: selectedProject?.id === p.id ? 'rgba(29,155,240,0.15)' : 'transparent',
+                                    }}
+                                    onMouseEnter={e => { if (selectedProject?.id !== p.id) e.currentTarget.style.backgroundColor = '#1a2030'; }}
+                                    onMouseLeave={e => { if (selectedProject?.id !== p.id) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                >
+                                    <div style={{ color: '#e7e9ea', fontSize: '14px', fontWeight: '500' }}>{p.name}</div>
+                                    <div style={{ color: '#6e767d', fontSize: '12px', marginTop: '2px' }}>
+                                        {[p.projectNumber, p.status, p.address].filter(Boolean).join(' \u2022 ')}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <input
+                            type="text" placeholder="Estimate name" value={estimateName}
+                            onChange={e => setEstimateName(e.target.value)}
+                            style={{ ...styles.input, marginBottom: '16px' }}
+                        />
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button onClick={() => setStep('auth')} style={styles.button('secondary')}>Back</button>
+                            <button
+                                onClick={() => setStep('push')}
+                                disabled={!selectedProject || !estimateName}
+                                style={{ ...styles.button('primary'), flex: 1, justifyContent: 'center', opacity: (!selectedProject || !estimateName) ? 0.5 : 1 }}
+                            >
+                                Next
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 3: Push */}
+                {step === 'push' && (
+                    <div>
+                        {pushState === 'idle' && (
+                            <>
+                                <div style={{ backgroundColor: '#0f1419', borderRadius: '8px', padding: '14px', marginBottom: '16px', border: '1px solid #2f3336' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '13px' }}>
+                                        <div style={{ color: '#6e767d' }}>Project:</div>
+                                        <div style={{ color: '#e7e9ea' }}>{selectedProject?.name}</div>
+                                        <div style={{ color: '#6e767d' }}>Estimate:</div>
+                                        <div style={{ color: '#e7e9ea' }}>{estimateName}</div>
+                                        <div style={{ color: '#6e767d' }}>Locations:</div>
+                                        <div style={{ color: '#e7e9ea' }}>{totalLocations}</div>
+                                        <div style={{ color: '#6e767d' }}>Items:</div>
+                                        <div style={{ color: '#e7e9ea' }}>{totalItems}</div>
+                                    </div>
+                                </div>
+                                {pushError && (
+                                    <p style={{ color: '#f85149', fontSize: '13px', marginBottom: '12px' }}>{pushError}</p>
+                                )}
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button onClick={() => setStep('select')} style={styles.button('secondary')}>Back</button>
+                                    <button
+                                        onClick={handlePush}
+                                        style={{ ...styles.button('success'), flex: 1, justifyContent: 'center' }}
+                                    >
+                                        Push to Procore
+                                    </button>
+                                </div>
+                            </>
+                        )}
+
+                        {pushState === 'pushing' && (
+                            <>
+                                <div style={{ marginBottom: '12px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                                        <span style={{ color: '#e7e9ea', fontSize: '13px' }}>{progress.text}</span>
+                                        <span style={{ color: '#6e767d', fontSize: '13px' }}>{progressPct}%</span>
+                                    </div>
+                                    <div style={{ height: '6px', backgroundColor: '#2f3336', borderRadius: '3px', overflow: 'hidden' }}>
+                                        <div style={{ height: '100%', width: `${progressPct}%`, backgroundColor: '#1d9bf0', borderRadius: '3px', transition: 'width 0.3s' }} />
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => { abortRef.current = true; }}
+                                    style={{ ...styles.button('danger'), width: '100%', justifyContent: 'center' }}
+                                >
+                                    Cancel
+                                </button>
+                            </>
+                        )}
+
+                        {pushState === 'done' && (
+                            <>
+                                <div style={{ textAlign: 'center', padding: '20px' }}>
+                                    <div style={{ fontSize: '40px', marginBottom: '8px' }}>&#10003;</div>
+                                    <p style={{ color: '#00ba7c', fontSize: '16px', fontWeight: '600' }}>Estimate pushed successfully!</p>
+                                    <p style={{ color: '#8b949e', fontSize: '13px' }}>
+                                        {totalLocations} locations and {totalItems} items uploaded to {selectedProject?.name}
+                                    </p>
+                                </div>
+                                <button onClick={onClose} style={{ ...styles.button('primary'), width: '100%', justifyContent: 'center' }}>
+                                    Done
+                                </button>
+                            </>
+                        )}
+
+                        {pushState === 'error' && (
+                            <>
+                                <div style={{ textAlign: 'center', padding: '20px' }}>
+                                    <p style={{ color: '#f85149', fontSize: '14px', fontWeight: '600' }}>Push failed</p>
+                                    <p style={{ color: '#8b949e', fontSize: '13px', marginTop: '8px' }}>{pushError}</p>
+                                    <p style={{ color: '#6e767d', fontSize: '12px', marginTop: '8px' }}>
+                                        Partial data may exist in Procore. Check the estimate in Procore Estimating.
+                                    </p>
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button onClick={onClose} style={styles.button('secondary')}>Close</button>
+                                    <button
+                                        onClick={() => { setPushState('idle'); setPushError(''); }}
+                                        style={{ ...styles.button('primary'), flex: 1, justifyContent: 'center' }}
+                                    >
+                                        Retry
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function LoginScreen({ onAuth }) {
     const [mode, setMode] = useState('signin'); // 'signin' or 'signup'
     const [email, setEmail] = useState('');
@@ -6805,6 +7365,7 @@ function App() {
     const [pendingRevisionProjectId, setPendingRevisionProjectId] = useState(null); // For revisions on non-active projects
     const [revisionPromptLabelOverride, setRevisionPromptLabelOverride] = useState(null);
     const [revisionPromptManualCreate, setRevisionPromptManualCreate] = useState(false);
+    const [showProcorePush, setShowProcorePush] = useState(false);
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
     const [projectFilter, setProjectFilter] = useState('active');
     
@@ -9187,6 +9748,12 @@ function App() {
                                 <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Complete estimate with location sheets, labor, and phase codes.</p>
                                 <button style={styles.button('primary')} onClick={exportProcoreEstimate}><Icons.Download /> Export</button>
                             </div>
+                            {/* Push to Procore Estimating via API */}
+                            <div style={styles.card}>
+                                <div style={styles.cardTitle}>Push to Procore Estimating</div>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Push complete estimate with labor, phases, and locations directly via API.</p>
+                                <button style={styles.button('success')} onClick={() => setShowProcorePush(true)}><Icons.Upload /> Push to Procore</button>
+                            </div>
                             {/* Labor by Phase */}
                             <div style={styles.card}>
                                 <div style={styles.cardTitle}>Labor by Phase</div>
@@ -9366,6 +9933,18 @@ function App() {
                     onViewRevision={(revId) => { setViewingRevisionId(revId); if (revId) setShowRevisionHistory(false); }}
                     onRestoreRevision={(revId) => { restoreRevision(revId); setShowRevisionHistory(false); }}
                     onClose={() => setShowRevisionHistory(false)}
+                />
+            )}
+
+            {/* Push to Procore Estimating Modal */}
+            {showProcorePush && (
+                <ProcorePushModal
+                    onClose={() => setShowProcorePush(false)}
+                    locations={effectiveLocations}
+                    catalogPkgs={packages}
+                    projectPkgs={effectivePackages}
+                    projectName={project?.name}
+                    showToast={showToast}
                 />
             )}
 
