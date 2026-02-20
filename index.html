@@ -56,6 +56,8 @@ const CONFIG = {
     SUPABASE_URL: 'https://zyxzkwziyysugomjyidb.supabase.co',
     SUPABASE_ANON_KEY: 'sb_publishable_gnK6VeaiKdehrhoUi-b4Fg_LvsEfjCB',
 
+    // Catalog version — bump this when av_catalog.json changes to force re-fetch
+    CATALOG_VERSION: 47,
 };
 
 // Initialize Supabase client
@@ -6857,8 +6859,11 @@ function App() {
         // On first ever load (no localStorage), build from av_catalog.json + Supabase.
         // On subsequent loads (browser refresh), just use localStorage directly.
         // Use the in-app refresh button to pull latest from Supabase.
+        // If CATALOG_VERSION changes (av_catalog.json was updated), force re-fetch.
+        const savedVersion = localStorage.getItem('av-estimator-catalog-version');
+        const versionMatch = savedVersion && parseInt(savedVersion) === CONFIG.CATALOG_VERSION;
         const saved = localStorage.getItem('av-estimator-catalog');
-        if (saved) {
+        if (saved && versionMatch) {
             try {
                 const localCatalog = JSON.parse(saved);
                 if (localCatalog?.length > 0) {
@@ -6870,6 +6875,7 @@ function App() {
                 }
             } catch (e) {}
         }
+        if (!versionMatch) console.log('Catalog version changed — re-fetching base catalog');
 
         // First-time load: build catalog from base JSON + Supabase customizations
         setCatalogSyncStatus('syncing');
@@ -6909,6 +6915,7 @@ function App() {
 
         setCatalog(result);
         localStorage.setItem('av-estimator-catalog', JSON.stringify(result));
+        localStorage.setItem('av-estimator-catalog-version', String(CONFIG.CATALOG_VERSION));
         setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
         setCatalogDirty(false);
     };
@@ -7250,6 +7257,7 @@ function App() {
             projectNumber: projectData.projectNumber || '',
             revisions: [],
             currentRevision: null,
+            packages: [],
         };
         setProjects(prev => [newProject, ...prev]);
         return newProject.id;
@@ -7562,7 +7570,50 @@ function App() {
             }, 2000);
         }
     }, [projects, packages, templates, activeProjectId, team]);
-    
+
+    // Manual save — flush localStorage + immediate Supabase sync (Ctrl+S / Save button)
+    const saveNow = React.useCallback(async () => {
+        if (!hasLoaded.current) return;
+        // 1. Save to localStorage immediately
+        const data = { projects, packages, templates, activeProjectId };
+        localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
+
+        // 2. Cancel any pending debounced sync
+        clearTimeout(syncTimer.current);
+
+        // 3. Immediate Supabase sync
+        if (supabase && session) {
+            setSyncStatus('syncing');
+            try {
+                for (const p of projects) {
+                    const { error } = await supabase.from('projects').upsert({
+                        id: p.id,
+                        user_id: session.user.id,
+                        team_id: team?.id || null,
+                        data: p,
+                        updated_at: p.updatedAt || new Date().toISOString(),
+                    });
+                    if (error) throw error;
+                }
+                await supabase.from('user_settings').upsert({
+                    user_id: session.user.id,
+                    team_id: team?.id || null,
+                    packages,
+                    templates,
+                    updated_at: new Date().toISOString(),
+                });
+                setSyncStatus('synced');
+                showToast('Project saved ✓');
+            } catch (err) {
+                console.error('Save error:', err);
+                setSyncStatus('error');
+                showToast('Saved locally (sync failed)');
+            }
+        } else {
+            showToast('Project saved locally');
+        }
+    }, [projects, packages, templates, activeProjectId, team, supabase, session]);
+
     // Save catalog to localStorage when it changes
     useEffect(() => {
         localStorage.setItem('av-estimator-catalog', JSON.stringify(catalog));
@@ -7666,9 +7717,20 @@ function App() {
                 } else {
                     settQuery = settQuery.eq('user_id', session.user.id);
                 }
-                const { data: settings } = await settQuery.single();
+                const { data: settings } = await settQuery.maybeSingle();
                 if (settings) {
-                    if (settings.packages?.length > 0) setPackages(prev => prev.length > 0 ? prev : settings.packages);
+                    // Merge packages by ID — newer updatedAt wins (supports multi-device sync)
+                    if (settings.packages?.length > 0) {
+                        setPackages(prev => {
+                            const merged = {};
+                            [...prev, ...settings.packages].forEach(p => {
+                                if (!merged[p.id] || new Date(p.updatedAt || 0) > new Date(merged[p.id].updatedAt || 0)) {
+                                    merged[p.id] = p;
+                                }
+                            });
+                            return Object.values(merged);
+                        });
+                    }
                     if (settings.templates && Object.keys(settings.templates).length > 0) setTemplates(prev => Object.keys(prev).length > 0 ? prev : settings.templates);
                 }
 
@@ -7965,7 +8027,7 @@ function App() {
         const handleKeyDown = (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
             if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
-            if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); showToast('Project saved'); }
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveNow(); }
             if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
                 e.preventDefault();
                 if (!showSearch && activeProjectId && !showProjectsHome) {
@@ -7988,7 +8050,7 @@ function App() {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [historyIndex, history, clipboard, showSearch, showAddLocation, showAddSublocation, showDuplicate, showDelete, showSavePackage, showSaveTemplate, showApplyTemplate, activeProjectId, showProjectsHome]);
+    }, [historyIndex, history, clipboard, showSearch, showAddLocation, showAddSublocation, showDuplicate, showDelete, showSavePackage, showSaveTemplate, showApplyTemplate, activeProjectId, showProjectsHome, saveNow]);
 
     // Initialize expanded state when locations change
     useEffect(() => {
@@ -8771,6 +8833,7 @@ function App() {
                     <div style={{ display: 'flex', gap: '4px' }}>
                         <button style={{ ...styles.iconButton, opacity: historyIndex <= 0 || isViewingHistory ? 0.3 : 1 }} onClick={undo} disabled={historyIndex <= 0 || isViewingHistory} title="Undo (Ctrl+Z)"><Icons.Undo /></button>
                         <button style={{ ...styles.iconButton, opacity: historyIndex >= history.length - 1 || isViewingHistory ? 0.3 : 1 }} onClick={redo} disabled={historyIndex >= history.length - 1 || isViewingHistory} title="Redo (Ctrl+Y)"><Icons.Redo /></button>
+                        <button style={{ ...styles.iconButton, color: syncStatus === 'syncing' ? '#f59e0b' : '#8b98a5' }} onClick={saveNow} title="Save (Ctrl+S)"><Icons.Save /></button>
                     </div>
                     <div style={{ display: 'flex', gap: '2px', backgroundColor: '#2f3336', borderRadius: '6px', padding: '2px' }}>
                         <button 
