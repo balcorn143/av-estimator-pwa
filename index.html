@@ -6821,6 +6821,7 @@ function App() {
     
     // Load catalog on mount. If first-time (no localStorage) and team becomes available, reload to get Supabase customizations.
     const catalogInitializedRef = React.useRef(false);
+    const catalogVersionRefreshed = React.useRef(false);
     useEffect(() => {
         loadCatalogData();
     }, []);
@@ -6834,7 +6835,7 @@ function App() {
     }, [team]);
     
     // Helper to apply team customizations (edits, deletions, favorites, notes) to base catalog
-    const applyCatalogCustomizations = (baseCatalog, customizations) => {
+    const applyCatalogCustomizations = (baseCatalog, customizations, { skipCategories = false } = {}) => {
         if (!customizations?.length) return baseCatalog;
         const customMap = {};
         customizations.forEach(c => { customMap[c.catalog_item_id] = c; });
@@ -6845,6 +6846,12 @@ function App() {
                 if (custom.custom_fields) {
                     try {
                         const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
+                        // When base catalog was refreshed (version bump), don't let stale Supabase
+                        // category/subcategory overwrite the new base catalog values
+                        if (skipCategories) {
+                            delete fields.category;
+                            delete fields.subcategory;
+                        }
                         merged = { ...merged, ...fields };
                     } catch (e) { console.error('Failed to parse custom_fields', e); }
                 }
@@ -6875,7 +6882,10 @@ function App() {
                 }
             } catch (e) {}
         }
-        if (!versionMatch) console.log('Catalog version changed — re-fetching base catalog');
+        if (!versionMatch) {
+            console.log('Catalog version changed — re-fetching base catalog');
+            catalogVersionRefreshed.current = true;
+        }
 
         // First-time load: build catalog from base JSON + Supabase customizations
         setCatalogSyncStatus('syncing');
@@ -6906,7 +6916,7 @@ function App() {
                     .eq('team_id', team.id)
                     .limit(5000);
                 if (!error && customizations?.length > 0) {
-                    result = applyCatalogCustomizations(result, customizations);
+                    result = applyCatalogCustomizations(result, customizations, { skipCategories: !versionMatch });
                 }
             } catch (e) {
                 console.log('Failed to load team customizations');
@@ -7753,6 +7763,8 @@ function App() {
                                     if (custom.custom_fields) {
                                         try {
                                             const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
+                                            // After a catalog version refresh, don't let stale Supabase categories overwrite new base catalog
+                                            if (catalogVersionRefreshed.current) { delete fields.category; delete fields.subcategory; }
                                             merged = { ...merged, ...fields };
                                         } catch (e) { console.error('Failed to parse custom_fields', e); }
                                     }
