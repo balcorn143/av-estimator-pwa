@@ -6796,6 +6796,7 @@ function App() {
     const [showProjectsHome, setShowProjectsHome] = useState(true);
     const [showNewProjectModal, setShowNewProjectModal] = useState(false);
     const [showDashboardCatalog, setShowDashboardCatalog] = useState(false);
+    const [dashboardCatalogTab, setDashboardCatalogTab] = useState('components');
     const [team, setTeam] = useState(null);
     const [showTeamModal, setShowTeamModal] = useState(false);
     const hasLoaded = React.useRef(false);
@@ -8711,7 +8712,7 @@ function App() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                             <button
                                 style={{ ...styles.iconButton, color: '#8b98a5' }}
-                                onClick={() => setShowDashboardCatalog(false)}
+                                onClick={() => { setShowDashboardCatalog(false); setDashboardCatalogTab('components'); }}
                                 title="Back to Projects">
                                 <Icons.ChevronDown style={{ transform: 'rotate(90deg)' }} />
                             </button>
@@ -8719,17 +8720,34 @@ function App() {
                                 <Icons.Layers /> Catalog
                             </div>
                         </div>
+                        <nav style={{ display: 'flex', gap: '4px' }}>
+                            <button style={styles.navButton(dashboardCatalogTab === 'components')} onClick={() => setDashboardCatalogTab('components')}>Components</button>
+                            <button style={styles.navButton(dashboardCatalogTab === 'packages')} onClick={() => setDashboardCatalogTab('packages')}>Packages ({packages.length})</button>
+                        </nav>
                     </header>
                     <main style={{ ...styles.main, padding: '16px 24px' }}>
-                        <CatalogView
-                            catalog={catalog}
-                            onUpdateCatalog={updateCatalog}
-                            onRefreshCatalog={refreshCatalog}
-                            onSaveCatalog={saveCatalog}
-                            syncStatus={catalogSyncStatus}
-                            catalogDirty={catalogDirty}
-                            compactMode={compactMode}
-                        />
+                        {dashboardCatalogTab === 'components' && (
+                            <CatalogView
+                                catalog={catalog}
+                                onUpdateCatalog={updateCatalog}
+                                onRefreshCatalog={refreshCatalog}
+                                onSaveCatalog={saveCatalog}
+                                syncStatus={catalogSyncStatus}
+                                catalogDirty={catalogDirty}
+                                compactMode={compactMode}
+                            />
+                        )}
+                        {dashboardCatalogTab === 'packages' && (
+                            <PackagesView
+                                catalogPackages={packages}
+                                projectPackages={[]}
+                                onUpdateCatalogPackages={setPackages}
+                                onUpdateProjectPackages={() => {}}
+                                catalog={catalog}
+                                locations={[]}
+                                onSyncInstances={() => {}}
+                            />
+                        )}
                     </main>
                     {toast && <div style={styles.toast}>{toast}</div>}
                 </div>
