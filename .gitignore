@@ -2,6 +2,10 @@
 *.swp
 *.swo
 *~
+node_modules/
+dist/
+.vite/
+index.html.bak
 convert-xlsx.py
 test-project.json
 load-test-data.html

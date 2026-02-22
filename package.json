@@ -1,0 +1,32 @@
+{
+  "name": "av-estimator-pwa",
+  "version": "1.0.0",
+  "description": "A Progressive Web App for Audio/Visual project estimation.",
+  "main": "sw.js",
+  "scripts": {
+    "dev": "vite --port 8080",
+    "build": "vite build",
+    "preview": "vite preview --port 8080"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/balcorn143/av-estimator-pwa.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": true,
+  "bugs": {
+    "url": "https://github.com/balcorn143/av-estimator-pwa/issues"
+  },
+  "homepage": "https://github.com/balcorn143/av-estimator-pwa#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.97.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "vite": "^7.3.1",
+    "xlsx": "^0.18.5"
+  }
+}

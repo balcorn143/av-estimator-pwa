@@ -1,4 +1,4 @@
-const CACHE_NAME = 'av-estimator-v48';
+const CACHE_NAME = 'av-estimator-v49';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -33,8 +33,8 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // Pass through Supabase API and CDN requests without caching
-  if (url.hostname.includes('supabase.co') || url.hostname.includes('unpkg.com') || url.hostname.includes('jsdelivr.net')) {
+  // Pass through Supabase API requests without caching
+  if (url.hostname.includes('supabase.co')) {
     event.respondWith(fetch(event.request));
     return;
   }
@@ -55,7 +55,8 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // For static assets (icons, manifest, sw), try cache first then network
+  // For hashed assets (Vite output like index-abc123.js), cache aggressively
+  // For other static assets, try cache first then network
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
