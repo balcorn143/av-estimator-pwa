@@ -15,7 +15,7 @@ export const CONFIG = {
     SUPABASE_ANON_KEY: 'sb_publishable_gnK6VeaiKdehrhoUi-b4Fg_LvsEfjCB',
 
     // Catalog version — bump this when av_catalog.json changes to force re-fetch
-    CATALOG_VERSION: 47,
+    CATALOG_VERSION: 48,
 };
 
 // Initialize Supabase client

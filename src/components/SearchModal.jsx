@@ -4,7 +4,7 @@ import { styles } from '../styles';
 import { Icons } from '../icons';
 import { fmtCost } from '../utils/formatters';
 
-export default function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, onInsertPkg, replaceMode, replaceIsPackage }) {
+export default function SearchModal({ catalog, packages, projectPackages, onClose, onInsert, onInsertPkg, replaceMode, replaceIsPackage, readOnly, onReadOnlyBlock }) {
     const [search, setSearch] = useState('');
     const [selected, setSelected] = useState([]);
     const [qty, setQty] = useState(1);
@@ -109,6 +109,7 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
     const [addedFeedback, setAddedFeedback] = useState('');
     const [selectedPkgId, setSelectedPkgId] = useState(null);
     const insert = () => {
+        if (readOnly) { onReadOnlyBlock?.(); return; }
         if (selected.length > 0) {
             onInsert(selected, qty);
             setAddedFeedback(`Added ${selected.length} item${selected.length > 1 ? 's' : ''}`);
@@ -117,6 +118,7 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
         }
     };
     const insertSelectedPkg = () => {
+        if (readOnly) { onReadOnlyBlock?.(); return; }
         const pkg = allPkgs.find(p => p.id === selectedPkgId);
         if (pkg) {
             onInsertPkg(pkg, qty);
@@ -256,7 +258,7 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
                                 <div key={item.id}
                                     style={{ ...styles.searchItem(isSelected), padding: '12px 14px' }}
                                     onClick={e => toggle(item, e)}
-                                    onDoubleClick={() => { onInsert([item], qty); setAddedFeedback('Added 1 item'); setTimeout(() => setAddedFeedback(''), 2000); }}
+                                    onDoubleClick={() => { if (readOnly) { onReadOnlyBlock?.(); return; } onInsert([item], qty); setAddedFeedback('Added 1 item'); setTimeout(() => setAddedFeedback(''), 2000); }}
                                     onMouseEnter={e => { if (!isSelected) e.currentTarget.style.backgroundColor = '#1a1f26'; }}
                                     onMouseLeave={e => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px' }}>
@@ -311,7 +313,7 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
                                 <div key={pkg.id}
                                     style={{ ...styles.searchItem(isPkgSelected), backgroundColor: isPkgSelected ? '#1d3a5c' : c.bg, borderLeft: `3px solid ${isPkgSelected ? '#1d9bf0' : c.b}` }}
                                     onClick={() => setSelectedPkgId(prev => prev === pkg.id ? null : pkg.id)}
-                                    onDoubleClick={() => { onInsertPkg(pkg, qty); setAddedFeedback(`Added package: ${pkg.name}`); setTimeout(() => setAddedFeedback(''), 2000); }}>
+                                    onDoubleClick={() => { if (readOnly) { onReadOnlyBlock?.(); return; } onInsertPkg(pkg, qty); setAddedFeedback(`Added package: ${pkg.name}`); setTimeout(() => setAddedFeedback(''), 2000); }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                             <Icons.Package />
@@ -525,6 +527,7 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
                         <button
                             style={{ ...styles.button('primary'), backgroundColor: '#a78bfa', opacity: (!phCategory || !phStats) ? 0.5 : 1 }}
                             onClick={() => {
+                                if (readOnly) { onReadOnlyBlock?.(); return; }
                                 if (!phCategory || !phStats) return;
                                 const tierData = phStats[phTier];
                                 const tierLabel = phTier === 'low' ? 'Low' : phTier === 'mid' ? 'Mid' : 'High';
@@ -567,6 +570,7 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
                                     uom: customItem.uom || 'EA',
                                     isCustom: true,
                                 };
+                                if (readOnly) { onReadOnlyBlock?.(); return; }
                                 onInsert([item], qty);
                                 setAddedFeedback('Added custom item');
                                 setCustomItem({ manufacturer: '', model: '', partNumber: '', description: '', category: '', subcategory: '', unitCost: '', laborHrsPerUnit: '', uom: 'EA' });

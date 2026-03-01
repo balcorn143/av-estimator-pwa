@@ -1,16 +1,18 @@
 import React from 'react'
-const { useState, useEffect, useMemo } = React
+const { useState, useEffect, useLayoutEffect, useMemo, useRef } = React
 import { styles } from '../styles'
 import { Icons } from '../icons'
 import { PROJECT_STATUSES } from '../constants'
 import { APP_VERSION } from '../config'
 import { fmtCost, fmtHrs } from '../utils/formatters'
 
-export default function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, onCreateRevision, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout }) {
+export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, onCreateRevision, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout, onForceCheckin, selectedProjectId, onSelectProject, packages }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [confirmDelete, setConfirmDelete] = useState(null);
     const [sortCol, setSortCol] = useState('updatedAt');
     const [sortDir, setSortDir] = useState('desc');
+    const [expandedRevisions, setExpandedRevisions] = useState({});
+    const contextMenuRef = useRef(null);
 
     const handleSort = (col) => {
         if (sortCol === col) { setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }
@@ -67,6 +69,20 @@ export default function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog
         const handleClick = () => setContextMenu(null);
         if (contextMenu) window.addEventListener('click', handleClick);
         return () => window.removeEventListener('click', handleClick);
+    }, [contextMenu]);
+
+    // Reposition context menu if it overflows the viewport
+    useLayoutEffect(() => {
+        if (contextMenu && contextMenuRef.current) {
+            const el = contextMenuRef.current;
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom > window.innerHeight - 8) {
+                el.style.top = Math.max(8, window.innerHeight - rect.height - 8) + 'px';
+            }
+            if (rect.right > window.innerWidth - 8) {
+                el.style.left = Math.max(8, window.innerWidth - rect.width - 8) + 'px';
+            }
+        }
     }, [contextMenu]);
 
     const statusCounts = useMemo(() => {
@@ -185,22 +201,39 @@ export default function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog
                                     const status = PROJECT_STATUSES[project.status] || PROJECT_STATUSES.developing;
                                     const checkout = checkouts[project.id];
                                     const updDate = project.updatedAt ? new Date(project.updatedAt) : null;
+                                    const isSelected = selectedProjectId === project.id;
+                                    const revisions = project.revisions || [];
+                                    const isExpanded = expandedRevisions[project.id];
                                     return (
+                                        <React.Fragment key={project.id}>
                                         <tr
-                                            key={project.id}
-                                            style={{ borderBottom: '1px solid #2f3336', cursor: 'pointer', transition: 'background-color 0.1s' }}
-                                            onClick={() => onOpen(project.id)}
+                                            style={{ borderBottom: '1px solid #2f3336', cursor: 'pointer', transition: 'background-color 0.1s', backgroundColor: isSelected ? '#1d3a5c' : 'transparent' }}
+                                            onClick={() => onSelectProject(project.id)}
+                                            onDoubleClick={() => onOpen(project.id)}
                                             onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, project }); }}
-                                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1e2530'}
-                                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                            onMouseEnter={e => { if (!isSelected) e.currentTarget.style.backgroundColor = '#1e2530'; }}
+                                            onMouseLeave={e => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}
                                         >
                                             <td style={{ padding: '12px 16px' }}>
-                                                <div style={{ fontWeight: '600', color: '#e7e9ea', fontSize: '14px' }}>{project.name}</div>
-                                                {checkout && (
-                                                    <div style={{ fontSize: '11px', color: checkout.userId === session?.user?.id ? '#00ba7c' : '#f59e0b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                        <Icons.Lock /> {checkout.userId === session?.user?.id ? 'Checked out by you' : `Checked out by ${checkout.email}`}
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    {revisions.length > 0 && (
+                                                        <span
+                                                            style={{ cursor: 'pointer', display: 'inline-flex', color: '#6e767d', flexShrink: 0 }}
+                                                            onClick={e => { e.stopPropagation(); setExpandedRevisions(prev => ({ ...prev, [project.id]: !prev[project.id] })); }}
+                                                            title={isExpanded ? 'Collapse revisions' : 'Expand revisions'}
+                                                        >
+                                                            {isExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}
+                                                        </span>
+                                                    )}
+                                                    <div>
+                                                        <div style={{ fontWeight: '600', color: '#e7e9ea', fontSize: '14px' }}>{project.name}</div>
+                                                        {checkout && (
+                                                            <div style={{ fontSize: '11px', color: checkout.userId === session?.user?.id ? '#00ba7c' : '#f59e0b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                                <Icons.Lock /> {checkout.userId === session?.user?.id ? 'Checked out by you' : `Checked out by ${checkout.email}`}
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                )}
+                                                </div>
                                             </td>
                                             <td style={{ padding: '12px 12px', color: '#8b98a5', fontSize: '13px' }}>{project.client || '\u2014'}</td>
                                             <td style={{ padding: '12px 12px', color: '#8b98a5', fontSize: '13px' }}>{project.projectNumber || '\u2014'}</td>
@@ -222,6 +255,44 @@ export default function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog
                                                 </button>
                                             </td>
                                         </tr>
+                                        {isExpanded && [...revisions].reverse().map(rev => {
+                                            const revDate = rev.createdAt ? new Date(rev.createdAt) : null;
+                                            // Calculate revision totals from snapshot if available
+                                            let revCost = null, revLabor = null;
+                                            if (rev.snapshot) {
+                                                const revProj = { ...project, locations: rev.snapshot.locations || [], packages: rev.snapshot.packages || project.packages || [] };
+                                                const revTotals = getProjectTotals(revProj);
+                                                revCost = revTotals.cost;
+                                                revLabor = revTotals.labor;
+                                            }
+                                            return (
+                                                <tr
+                                                    key={rev.id}
+                                                    style={{ borderBottom: '1px solid #2f3336', backgroundColor: '#151a21', cursor: 'pointer' }}
+                                                    onDoubleClick={() => { onOpenRevision(project.id, rev.id); }}
+                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1a2030'}
+                                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = '#151a21'}
+                                                >
+                                                    <td style={{ padding: '8px 16px 8px 46px' }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                            <Icons.RotateCcw />
+                                                            <span style={{ fontWeight: '500', color: '#8b98a5', fontSize: '13px' }}>{rev.label}</span>
+                                                        </div>
+                                                        {rev.notes && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '2px', paddingLeft: '22px' }}>{rev.notes}</div>}
+                                                    </td>
+                                                    <td style={{ padding: '8px 12px' }} colSpan="2"></td>
+                                                    <td style={{ padding: '8px 12px' }}></td>
+                                                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#00ba7c', fontSize: '12px' }}>{revCost != null ? fmtCost(revCost) : '\u2014'}</td>
+                                                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#1d9bf0', fontSize: '12px' }}>{revLabor != null ? fmtHrs(revLabor) : '\u2014'}</td>
+                                                    <td style={{ padding: '8px 12px' }}>
+                                                        <div style={{ color: '#6e767d', fontSize: '11px', whiteSpace: 'nowrap' }}>{revDate ? revDate.toLocaleDateString() : '\u2014'}</div>
+                                                        {rev.createdBy && <div style={{ color: '#4a5568', fontSize: '10px' }}>{rev.createdBy}</div>}
+                                                    </td>
+                                                    <td style={{ padding: '8px 8px' }}></td>
+                                                </tr>
+                                            );
+                                        })}
+                                        </React.Fragment>
                                     );
                                 })}
                             </tbody>
@@ -247,7 +318,7 @@ export default function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog
 
             {/* Context menu */}
             {contextMenu && (
-                <div style={{
+                <div ref={contextMenuRef} style={{
                     position: 'fixed',
                     left: contextMenu.x,
                     top: contextMenu.y,
@@ -257,7 +328,9 @@ export default function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog
                     padding: '4px',
                     zIndex: 1000,
                     boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-                    minWidth: '180px'
+                    minWidth: '180px',
+                    maxHeight: 'calc(100vh - 16px)',
+                    overflowY: 'auto'
                 }}>
                     <button
                         style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
@@ -287,6 +360,21 @@ export default function ProjectsHome({ projects, onOpen, onCreate, onOpenCatalog
                         onClick={() => { onCreateRevision(contextMenu.project); setContextMenu(null); }}>
                         <Icons.RotateCcw /> Create Revision
                     </button>
+                    {(() => {
+                        const co = checkouts[contextMenu.project.id];
+                        const isOther = co && co.userId !== session?.user?.id;
+                        const isAdmin = team && (team.role === 'owner' || team.role === 'admin');
+                        if (isOther && isAdmin) return (
+                            <button
+                                style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#f87171' }}
+                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                onClick={() => { onForceCheckin(contextMenu.project.id); setContextMenu(null); }}>
+                                <Icons.Unlock /> Force Check In ({co.email})
+                            </button>
+                        );
+                        return null;
+                    })()}
                     <div style={{ borderTop: '1px solid #2f3336', margin: '4px 0' }} />
                     <div style={{ padding: '4px 12px', fontSize: '11px', color: '#6e767d', textTransform: 'uppercase' }}>Set Status</div>
                     {Object.entries(PROJECT_STATUSES).map(([key, val]) => (

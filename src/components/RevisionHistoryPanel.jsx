@@ -16,13 +16,12 @@ export default function RevisionHistoryPanel({ project, viewingRevisionId, onVie
                 </p>
                 {revisions.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '40px', color: '#6e767d' }}>
-                        No revisions yet. Revisions are created when you submit a proposal or make changes to a submitted project.
+                        No revisions yet. Create a revision to save a snapshot of the current project state.
                     </div>
                 ) : (
                     <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
                         {revisions.map((rev, idx) => {
                             const isViewing = rev.id === viewingRevisionId;
-                            const isCurrent = rev.id === project.currentRevision;
                             const hasSnapshot = !!rev.snapshot;
                             return (
                                 <div key={rev.id} style={{
@@ -32,10 +31,9 @@ export default function RevisionHistoryPanel({ project, viewingRevisionId, onVie
                                 }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                            <span style={{ fontWeight: '600', color: isCurrent ? '#f59e0b' : '#e7e9ea', fontSize: '14px' }}>
+                                            <span style={{ fontWeight: '600', color: '#e7e9ea', fontSize: '14px' }}>
                                                 {rev.label}
                                             </span>
-                                            {isCurrent && <span style={{ ...styles.badge('orange'), fontSize: '10px' }}>ACTIVE</span>}
                                             {!hasSnapshot && <span style={{ fontSize: '10px', color: '#6e767d', fontStyle: 'italic' }}>(no snapshot)</span>}
                                         </div>
                                         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
@@ -49,7 +47,7 @@ export default function RevisionHistoryPanel({ project, viewingRevisionId, onVie
                                                     <button
                                                         style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c', fontSize: '12px' }}
                                                         onClick={() => {
-                                                            if (confirm(`Restore "${rev.label}"?\n\nThis will replace your current project data with this snapshot. Your current state will be saved as a new revision first.`)) {
+                                                            if (confirm(`Restore "${rev.label}"?\n\nThis will replace your current project data with this revision's snapshot.`)) {
                                                                 onRestoreRevision(rev.id);
                                                             }
                                                         }}>

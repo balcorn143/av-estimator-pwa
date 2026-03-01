@@ -85,7 +85,7 @@ export default function EditProjectModal({ project, onClose, onSave, onViewRevis
                             {project.revisions.map(rev => (
                                 <div key={rev.id} style={{ padding: '8px 12px', borderBottom: '1px solid #2f3336', fontSize: '13px' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <span style={{ fontWeight: '600', color: rev.id === project.currentRevision ? '#f59e0b' : '#e7e9ea' }}>{rev.label}</span>
+                                        <span style={{ fontWeight: '600', color: '#e7e9ea' }}>{rev.label}</span>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             {rev.snapshot && onViewRevision && (
                                                 <button

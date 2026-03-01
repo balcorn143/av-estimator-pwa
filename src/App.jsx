@@ -25,6 +25,7 @@ import EditProjectModal from './components/EditProjectModal'
 import TeamModal from './components/TeamModal'
 import RevisionPromptModal from './components/RevisionPromptModal'
 import RevisionHistoryPanel from './components/RevisionHistoryPanel'
+import CheckoutModal from './components/CheckoutModal'
 import AccessoryPromptModal from './components/AccessoryPromptModal'
 import ConvertToAccessoryModal from './components/ConvertToAccessoryModal'
 import AddAccessoryModal from './components/AddAccessoryModal'
@@ -95,11 +96,9 @@ export default function App() {
     const [editingProject, setEditingProject] = useState(null);
     const [showProjectSettings, setShowProjectSettings] = useState(false);
     const [showRevisionPrompt, setShowRevisionPrompt] = useState(false);
-    const [pendingMutation, setPendingMutation] = useState(null);
     const [viewingRevisionId, setViewingRevisionId] = useState(null);
     const [showRevisionHistory, setShowRevisionHistory] = useState(false);
     const [pendingRevisionProjectId, setPendingRevisionProjectId] = useState(null); // For revisions on non-active projects
-    const [revisionPromptLabelOverride, setRevisionPromptLabelOverride] = useState(null);
     const [revisionPromptManualCreate, setRevisionPromptManualCreate] = useState(false);
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
     const [projectFilter, setProjectFilter] = useState('active');
@@ -128,7 +127,7 @@ export default function App() {
     }, [team]);
     
     // Helper to apply team customizations (edits, deletions, favorites, notes) to base catalog
-    const applyCatalogCustomizations = (baseCatalog, customizations, { skipCategories = false } = {}) => {
+    const applyCatalogCustomizations = (baseCatalog, customizations) => {
         if (!customizations?.length) return baseCatalog;
         const customMap = {};
         customizations.forEach(c => { customMap[c.catalog_item_id] = c; });
@@ -139,12 +138,11 @@ export default function App() {
                 if (custom.custom_fields) {
                     try {
                         const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
-                        // When base catalog was refreshed (version bump), don't let stale Supabase
-                        // category/subcategory overwrite the new base catalog values
-                        if (skipCategories) {
-                            delete fields.category;
-                            delete fields.subcategory;
-                        }
+                        // Base catalog JSON is the source of truth for categories.
+                        // Always strip category/subcategory from Supabase customizations
+                        // to prevent stale pre-consolidation values from leaking back in.
+                        delete fields.category;
+                        delete fields.subcategory;
                         merged = { ...merged, ...fields };
                     } catch (e) { console.error('Failed to parse custom_fields', e); }
                 }
@@ -209,7 +207,7 @@ export default function App() {
                     .eq('team_id', team.id)
                     .limit(5000);
                 if (!error && customizations?.length > 0) {
-                    result = applyCatalogCustomizations(result, customizations, { skipCategories: !versionMatch });
+                    result = applyCatalogCustomizations(result, customizations);
                 }
             } catch (e) {
                 console.log('Failed to load team customizations');
@@ -410,11 +408,6 @@ export default function App() {
     const isUndoRedo = React.useRef(false);
 
     // Update project helper
-    // Check if a mutation requires a revision before proceeding
-    const requiresRevision = (proj) => {
-        const postSubmissionStatuses = ['proposal-submitted', 'active', 'completed'];
-        return postSubmissionStatuses.includes(proj?.status) && !proj?.currentRevision;
-    };
 
     const setProjectDirect = (updater) => {
         setProjects(prev => prev.map(p => {
@@ -426,22 +419,27 @@ export default function App() {
         }));
     };
 
-    const setProject = (updater) => {
+    // Returns false if the edit was blocked (read-only / viewing history / needs revision)
+    const isProjectEditable = () => {
         if (projectReadOnly) {
-            showToast('Project is read-only — checked out by ' + (checkedOutBy || 'another user'));
-            return;
+            if (isViewingHistory) {
+                showToast('Cannot edit — viewing a read-only revision', 'warning');
+            } else {
+                showToast('Project is read-only — checked out by ' + (checkedOutBy || 'another user'), 'warning');
+            }
+            return false;
         }
         if (isViewingHistory) {
-            showToast('Cannot edit — viewing a historical revision');
-            return;
+            showToast('Cannot edit — viewing a historical revision', 'warning');
+            return false;
         }
-        const currentProject = projects.find(p => p.id === activeProjectId);
-        if (currentProject && requiresRevision(currentProject)) {
-            setPendingMutation(() => () => setProjectDirect(updater));
-            setShowRevisionPrompt(true);
-            return;
-        }
+        return true;
+    };
+
+    const setProject = (updater) => {
+        if (!isProjectEditable()) return false;
         setProjectDirect(updater);
+        return true;
     };
 
     // Handle revision creation from the modal
@@ -462,12 +460,11 @@ export default function App() {
             createdBy: session?.user?.email || 'unknown',
             snapshot,
         };
-        // Add the revision to the project and set it as current
+        // Add the revision to the project
         if (targetProjectId === activeProjectId) {
             setProjectDirect(p => ({
                 ...p,
                 revisions: [...(p.revisions || []), revision],
-                currentRevision: revision.id,
             }));
         } else {
             // Non-active project (e.g., status change from dashboard)
@@ -475,7 +472,6 @@ export default function App() {
                 p.id === targetProjectId ? {
                     ...p,
                     revisions: [...(p.revisions || []), revision],
-                    currentRevision: revision.id,
                     updatedAt: new Date().toISOString(),
                     updatedBy: session?.user?.email || '',
                 } : p
@@ -498,18 +494,6 @@ export default function App() {
             });
         }
 
-        // Then execute the pending mutation
-        if (pendingMutation) {
-            setTimeout(() => {
-                pendingMutation();
-                setPendingMutation(null);
-            }, 50);
-        }
-    };
-
-    // Close current revision (next change will prompt for new one)
-    const closeRevision = () => {
-        setProjectDirect(p => ({ ...p, currentRevision: null }));
     };
 
     // Restore a historical revision
@@ -538,7 +522,6 @@ export default function App() {
             revisions: [...(p.revisions || []), preRestoreRevision],
             locations: JSON.parse(JSON.stringify(targetRevision.snapshot.locations)),
             packages: JSON.parse(JSON.stringify(targetRevision.snapshot.packages || [])),
-            currentRevision: null,
         }));
 
         setViewingRevisionId(null);
@@ -559,7 +542,6 @@ export default function App() {
             notes: projectData.notes || '',
             projectNumber: projectData.projectNumber || '',
             revisions: [],
-            currentRevision: null,
             packages: [],
         };
         setProjects(prev => [newProject, ...prev]);
@@ -570,6 +552,10 @@ export default function App() {
     const [projectReadOnly, setProjectReadOnly] = useState(false);
     const [checkedOutBy, setCheckedOutBy] = useState(null);
     const [checkouts, setCheckouts] = useState({}); // { projectId: { email, userId } }
+    const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+    const [showCheckinModal, setShowCheckinModal] = useState(false);
+    const [pendingOpenProjectId, setPendingOpenProjectId] = useState(null);
+    const [selectedProjectId, setSelectedProjectId] = useState(null);
 
     // Fetch checkout status for all projects (when on dashboard)
     useEffect(() => {
@@ -589,19 +575,39 @@ export default function App() {
         fetchCheckouts();
     }, [showProjectsHome, session, team]);
 
-    const openProject = async (projectId) => {
-        setProjectReadOnly(false);
-        setCheckedOutBy(null);
+    // Show checkout modal before opening a project (team mode only)
+    const initiateOpenProject = (projectId) => {
+        if (!supabase || !session || !team) {
+            // No team — open directly without checkout
+            openProjectDirect(projectId, false);
+            return;
+        }
+        // Already checked out by me — open directly in edit mode
+        const checkout = checkouts[projectId];
+        if (checkout && checkout.userId === session.user.id) {
+            openProjectDirect(projectId, false);
+            return;
+        }
+        // Show the checkout modal
+        setPendingOpenProjectId(projectId);
+        setShowCheckoutModal(true);
+    };
 
-        // Attempt checkout if on a team
-        if (supabase && session && team) {
+    // Actually open a project (called from modal or directly)
+    const openProjectDirect = async (projectId, readOnly) => {
+        setProjectReadOnly(readOnly);
+        setCheckedOutBy(null);
+        setShowCheckoutModal(false);
+        setPendingOpenProjectId(null);
+
+        if (!readOnly && supabase && session && team) {
             try {
                 const { data: success } = await supabase.rpc('checkout_project', {
                     p_project_id: projectId,
                     p_email: session.user.email
                 });
                 if (success === false) {
-                    // Someone else has it checked out — open read-only
+                    // Race condition — someone grabbed it between modal and click
                     const { data: projRow } = await supabase
                         .from('projects')
                         .select('checked_out_email, checked_out_by')
@@ -609,6 +615,7 @@ export default function App() {
                         .single();
                     setProjectReadOnly(true);
                     setCheckedOutBy(projRow?.checked_out_email || 'another user');
+                    showToast('Project was just checked out by ' + (projRow?.checked_out_email || 'another user') + ' — opening read-only');
                 }
             } catch (e) {
                 console.error('Checkout error:', e);
@@ -623,10 +630,34 @@ export default function App() {
         setViewingRevisionId(null);
     };
 
-    // Close current project and return to home
-    const closeProject = async () => {
-        // Check in the project
-        if (supabase && session && activeProjectId && !projectReadOnly) {
+    // Open a project read-only at a specific revision (from dashboard revision row)
+    const openRevision = (projectId, revisionId) => {
+        setProjectReadOnly(true);
+        setCheckedOutBy(null);
+        setShowCheckoutModal(false);
+        setPendingOpenProjectId(null);
+        setActiveProjectId(projectId);
+        setShowProjectsHome(false);
+        setSelected(null);
+        setHistory([]);
+        setHistoryIndex(-1);
+        setViewingRevisionId(revisionId);
+    };
+
+    // Show checkin modal before closing a project (team mode only)
+    const initiateCloseProject = () => {
+        if (!supabase || !session || !team || projectReadOnly) {
+            // No team, or read-only — close directly without asking
+            closeProjectDirect(false);
+            return;
+        }
+        setShowCheckinModal(true);
+    };
+
+    // Actually close a project (called from modal or directly)
+    const closeProjectDirect = async (doCheckin) => {
+        setShowCheckinModal(false);
+        if (doCheckin && supabase && session && activeProjectId) {
             try {
                 await supabase.rpc('checkin_project', { p_project_id: activeProjectId });
             } catch (e) {
@@ -639,6 +670,33 @@ export default function App() {
         setProjectReadOnly(false);
         setCheckedOutBy(null);
         setViewingRevisionId(null);
+    };
+
+    // Admin force check-in — release another user's checkout
+    const forceCheckinProject = async (projectId) => {
+        if (!supabase || !session || !team) return;
+        if (team.role !== 'owner' && team.role !== 'admin') {
+            showToast('Only admins can force check-in');
+            return;
+        }
+        const checkout = checkouts[projectId];
+        if (!checkout) return;
+        if (!confirm(`Force check in this project?\n\nThis will release the checkout held by ${checkout.email}. They may lose unsaved changes.`)) return;
+        try {
+            await supabase
+                .from('projects')
+                .update({ checked_out_by: null, checked_out_email: null, checked_out_at: null })
+                .eq('id', projectId);
+            setCheckouts(prev => {
+                const next = { ...prev };
+                delete next[projectId];
+                return next;
+            });
+            showToast('Checkout released');
+        } catch (e) {
+            console.error('Force checkin error:', e);
+            showToast('Failed to force check-in');
+        }
     };
     
     // Duplicate a project
@@ -661,7 +719,7 @@ export default function App() {
     const deleteProject = (projectId) => {
         setProjects(prev => prev.filter(p => p.id !== projectId));
         if (activeProjectId === projectId) {
-            closeProject();
+            closeProjectDirect(true);
         }
         // Delete from Supabase
         if (supabase && session) {
@@ -674,18 +732,6 @@ export default function App() {
     
     // Update project status
     const updateProjectStatus = (projectId, newStatus) => {
-        const proj = projects.find(p => p.id === projectId);
-        // When first submitting a proposal, prompt for a baseline revision snapshot
-        if (proj && proj.status === 'developing' && newStatus === 'proposal-submitted' && (!proj.revisions || proj.revisions.length === 0)) {
-            setPendingRevisionProjectId(projectId);
-            setPendingMutation(() => () => {
-                setProjects(prev => prev.map(p =>
-                    p.id === projectId ? { ...p, status: newStatus, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
-                ));
-            });
-            setShowRevisionPrompt(true);
-            return;
-        }
         setProjects(prev => prev.map(p =>
             p.id === projectId ? { ...p, status: newStatus, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
         ));
@@ -693,45 +739,7 @@ export default function App() {
 
     // Create revision from dashboard context menu
     const handleDashboardCreateRevision = (proj) => {
-        const hasRevisions = proj.revisions && proj.revisions.length > 0;
-        if (!hasRevisions) {
-            // No revisions yet — silently create "Original" snapshot first
-            const originalSnapshot = {
-                locations: JSON.parse(JSON.stringify(proj.locations || [])),
-                packages: JSON.parse(JSON.stringify(proj.packages || [])),
-            };
-            const originalRevision = {
-                id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-                label: 'Original',
-                notes: 'Original project state before revisions',
-                createdAt: new Date().toISOString(),
-                createdBy: session?.user?.email || 'unknown',
-                snapshot: originalSnapshot,
-            };
-            // Save Original revision to the project
-            if (proj.id === activeProjectId) {
-                setProjectDirect(p => ({
-                    ...p,
-                    revisions: [...(p.revisions || []), originalRevision],
-                    currentRevision: originalRevision.id,
-                }));
-            } else {
-                setProjects(prev => prev.map(p =>
-                    p.id === proj.id ? {
-                        ...p,
-                        revisions: [...(p.revisions || []), originalRevision],
-                        currentRevision: originalRevision.id,
-                        updatedAt: new Date().toISOString(),
-                        updatedBy: session?.user?.email || '',
-                    } : p
-                ));
-            }
-            showToast('Saved "Original" snapshot');
-        }
-        // Now prompt for the new revision label
         setPendingRevisionProjectId(proj.id);
-        setPendingMutation(null); // No pending mutation — just creating a revision
-        setRevisionPromptLabelOverride(!hasRevisions ? 'Rev 1' : null);
         setRevisionPromptManualCreate(true);
         setShowRevisionPrompt(true);
     };
@@ -804,8 +812,7 @@ export default function App() {
                             model: c.model,
                             partNumber: c.partNumber,
                             description: c.description,
-                            category: c.category,
-                            subcategory: c.subcategory,
+                            // category/subcategory intentionally omitted — base catalog JSON is the source of truth
                             unitCost: c.unitCost,
                             laborHrsPerUnit: c.laborHrsPerUnit,
                             uom: c.uom,
@@ -837,7 +844,7 @@ export default function App() {
     // Auto-save to localStorage + Supabase sync (skip until initial load completes)
     useEffect(() => {
         if (!hasLoaded.current) return;
-        const data = { projects, packages, templates, activeProjectId };
+        const data = { projects, packages, templates, activeProjectId, viewingRevisionId: viewingRevisionId || undefined, revisionReadOnly: (projectReadOnly && !checkedOutBy) || undefined };
         localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
 
         // Debounced sync to Supabase
@@ -872,13 +879,13 @@ export default function App() {
                 }
             }, 2000);
         }
-    }, [projects, packages, templates, activeProjectId, team]);
+    }, [projects, packages, templates, activeProjectId, viewingRevisionId, projectReadOnly, team]);
 
     // Manual save — flush localStorage + immediate Supabase sync (Ctrl+S / Save button)
     const saveNow = React.useCallback(async () => {
         if (!hasLoaded.current) return;
         // 1. Save to localStorage immediately
-        const data = { projects, packages, templates, activeProjectId };
+        const data = { projects, packages, templates, activeProjectId, viewingRevisionId: viewingRevisionId || undefined, revisionReadOnly: (projectReadOnly && !checkedOutBy) || undefined };
         localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
 
         // 2. Cancel any pending debounced sync
@@ -939,6 +946,12 @@ export default function App() {
                 if (data.activeProjectId) {
                     setActiveProjectId(data.activeProjectId);
                     setShowProjectsHome(false);
+                    if (data.viewingRevisionId) {
+                        setViewingRevisionId(data.viewingRevisionId);
+                    }
+                    if (data.revisionReadOnly) {
+                        setProjectReadOnly(true);
+                    }
                 }
                 // Migrate package definitions to new format
                 let loadedPackages = data.packages?.length > 0 ? migratePackageDefinitions(data.packages) : [];
@@ -1056,8 +1069,8 @@ export default function App() {
                                     if (custom.custom_fields) {
                                         try {
                                             const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
-                                            // After a catalog version refresh, don't let stale Supabase categories overwrite new base catalog
-                                            if (catalogVersionRefreshed.current) { delete fields.category; delete fields.subcategory; }
+                                            // Base catalog JSON is the source of truth for categories
+                                            delete fields.category; delete fields.subcategory;
                                             merged = { ...merged, ...fields };
                                         } catch (e) { console.error('Failed to parse custom_fields', e); }
                                     }
@@ -1109,8 +1122,8 @@ export default function App() {
         }
     };
     
-    const showToast = (msg) => {
-        setToast(msg);
+    const showToast = (msg, type) => {
+        setToast(type ? { msg, type } : msg);
         setTimeout(() => setToast(null), 2000);
     };
 
@@ -1295,6 +1308,7 @@ export default function App() {
                 return updatedItem;
             }),
         }));
+        if (!isProjectEditable()) return;
         setPackages(prev => updatePkgItems(prev));
         setProject(p => ({
             ...p,
@@ -1394,19 +1408,20 @@ export default function App() {
     };
 
     const addLocations = (names, parentId) => {
+        if (!isProjectEditable()) return;
         const newLocs = names.map(name => ({ id: Date.now().toString() + Math.random().toString(36).substr(2, 9), name, children: [], items: [] }));
         if (!parentId) {
             setProject(p => ({ ...p, locations: [...p.locations, ...newLocs] }));
         } else {
             const addToParent = locs => locs.map(l => l.id === parentId ? { ...l, children: [...(l.children || []), ...newLocs] } : l.children ? { ...l, children: addToParent(l.children) } : l);
-            setProject(p => ({ ...p, locations: addToParent(p.locations) }));
+            if (!setProject(p => ({ ...p, locations: addToParent(p.locations) }))) return;
             if (selected?.id === parentId) setSelected(s => ({ ...s, children: [...(s.children || []), ...newLocs] }));
         }
     };
 
     const deleteLocation = (id) => {
         const removeFromTree = locs => locs.filter(l => l.id !== id).map(l => l.children ? { ...l, children: removeFromTree(l.children) } : l);
-        setProject(p => ({ ...p, locations: removeFromTree(p.locations) }));
+        if (!setProject(p => ({ ...p, locations: removeFromTree(p.locations) }))) return;
         if (selected?.id === id) setSelected(null);
     };
 
@@ -1443,7 +1458,7 @@ export default function App() {
             });
         };
         
-        setProject(p => ({ ...p, locations: addSiblings(p.locations, location.id, newLocs) }));
+        if (!setProject(p => ({ ...p, locations: addSiblings(p.locations, location.id, newLocs) }))) return;
         const itemText = includeItems ? ' with components' : '';
         showToast(`Created ${newNames.length} location${newNames.length > 1 ? 's' : ''}${itemText}`);
     };
@@ -1561,13 +1576,13 @@ export default function App() {
 
     const updateItems = (id, items) => {
         const upd = locs => locs.map(l => l.id === id ? { ...l, items } : l.children ? { ...l, children: upd(l.children) } : l);
-        setProject(p => ({ ...p, locations: upd(p.locations) }));
+        if (!setProject(p => ({ ...p, locations: upd(p.locations) }))) return;
         if (selected?.id === id) setSelected(s => ({ ...s, items }));
     };
-    
+
     const renameLocation = (id, newName) => {
         const upd = locs => locs.map(l => l.id === id ? { ...l, name: newName } : l.children ? { ...l, children: upd(l.children) } : l);
-        setProject(p => ({ ...p, locations: upd(p.locations) }));
+        if (!setProject(p => ({ ...p, locations: upd(p.locations) }))) return;
         if (selected?.id === id) setSelected(s => ({ ...s, name: newName }));
         showToast(`Renamed to "${newName}"`);
     };
@@ -2031,7 +2046,7 @@ export default function App() {
                             />
                         )}
                     </main>
-                    {toast && <div style={styles.toast}>{toast}</div>}
+                    {toast && <div style={styles.toast}>{typeof toast === 'object' ? toast.msg : toast}</div>}
                 </div>
             );
         }
@@ -2039,7 +2054,8 @@ export default function App() {
             <>
                 <ProjectsHome
                     projects={projects}
-                    onOpen={openProject}
+                    onOpen={initiateOpenProject}
+                    onOpenRevision={openRevision}
                     onCreate={() => setShowNewProjectModal(true)}
                     onOpenCatalog={() => setShowDashboardCatalog(true)}
                     onOpenTeam={() => setShowTeamModal(true)}
@@ -2058,13 +2074,17 @@ export default function App() {
                     session={session}
                     syncStatus={syncStatus}
                     onLogout={() => { supabase && supabase.auth.signOut(); }}
+                    onForceCheckin={forceCheckinProject}
+                    selectedProjectId={selectedProjectId}
+                    onSelectProject={setSelectedProjectId}
+                    packages={packages}
                 />
                 {showNewProjectModal && (
                     <NewProjectModal
                         onClose={() => setShowNewProjectModal(false)}
                         onCreate={(data) => {
                             const id = createProject(data);
-                            openProject(id);
+                            openProjectDirect(id, false);
                         }}
                     />
                 )}
@@ -2077,7 +2097,7 @@ export default function App() {
                             setEditingProject(null);
                         }}
                         onViewRevision={(revId) => {
-                            openProject(editingProject.id);
+                            openProjectDirect(editingProject.id, true);
                             setViewingRevisionId(revId);
                             setEditingProject(null);
                         }}
@@ -2091,7 +2111,31 @@ export default function App() {
                         onTeamUpdate={(newTeam) => { setTeam(newTeam); if (newTeam) showToast(`Team: ${newTeam.name}`); }}
                     />
                 )}
-                {toast && <div style={styles.toast}>{toast}</div>}
+                {showCheckoutModal && pendingOpenProjectId && (() => {
+                    const proj = projects.find(p => p.id === pendingOpenProjectId);
+                    const checkout = checkouts[pendingOpenProjectId];
+                    const isOther = checkout && checkout.userId !== session?.user?.id;
+                    return (
+                        <CheckoutModal
+                            mode="checkout"
+                            projectName={proj?.name || 'Project'}
+                            checkedOutBy={checkout?.email}
+                            isCheckedOutByOther={isOther}
+                            onCheckout={() => openProjectDirect(pendingOpenProjectId, false)}
+                            onReadOnly={() => openProjectDirect(pendingOpenProjectId, true)}
+                            onClose={() => { setShowCheckoutModal(false); setPendingOpenProjectId(null); }}
+                        />
+                    );
+                })()}
+                {showRevisionPrompt && (
+                    <RevisionPromptModal
+                        project={pendingRevisionProjectId ? (projects.find(p => p.id === pendingRevisionProjectId) || project) : project}
+                        onClose={() => { setShowRevisionPrompt(false); setPendingRevisionProjectId(null); setRevisionPromptManualCreate(false); }}
+                        onCreateRevision={createRevision}
+                        manualCreate={revisionPromptManualCreate}
+                    />
+                )}
+                {toast && <div style={styles.toast}>{typeof toast === 'object' ? toast.msg : toast}</div>}
             </>
         );
     }
@@ -2100,16 +2144,20 @@ export default function App() {
         <div style={styles.app}>
             <header style={styles.header}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    <button 
-                        style={{ ...styles.iconButton, color: '#8b98a5' }} 
-                        onClick={closeProject}
+                    <button
+                        style={{ ...styles.iconButton, color: '#8b98a5' }}
+                        onClick={initiateCloseProject}
                         title="Back to Projects">
                         <Icons.ChevronLeft />
                     </button>
                     <div style={styles.logo}><Icons.Zap /> {project.name}</div>
                     {projectReadOnly && (
-                        <span style={{ ...styles.badge(''), backgroundColor: '#3d1a1a', color: '#f87171', fontSize: '11px' }}>
-                            <Icons.Lock /> Read-Only — checked out by {checkedOutBy}
+                        <span style={{ ...styles.badge(''), backgroundColor: isViewingHistory ? '#1d3a5c' : '#3d1a1a', color: isViewingHistory ? '#1d9bf0' : '#f87171', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                            {isViewingHistory ? (
+                                <><Icons.RotateCcw /> Viewing Revision: {viewingRevision?.label}</>
+                            ) : (
+                                <><Icons.Lock /> Read-Only — checked out by {checkedOutBy}</>
+                            )}
                         </span>
                     )}
                     {project.client && <span style={{ color: '#6e767d', fontSize: '14px' }}>• {project.client}</span>}
@@ -2125,20 +2173,8 @@ export default function App() {
                             onClick={() => setShowRevisionHistory(true)}
                         >
                             <Icons.Clock />
-                            {project.currentRevision
-                                ? (project.revisions.find(r => r.id === project.currentRevision) || {}).label || 'Revision'
-                                : `${project.revisions.length} Rev${project.revisions.length > 1 ? 's' : ''}`
-                            }
+                            {project.revisions.length} Rev{project.revisions.length > 1 ? 's' : ''}
                         </span>
-                    )}
-                    {project.currentRevision && (
-                        <button
-                            style={{ ...styles.iconButton, color: '#f59e0b', padding: '2px', fontSize: '12px' }}
-                            title="Close current revision. Next change will require a new revision."
-                            onClick={() => { if (confirm('Close revision "' + ((project.revisions?.find(r => r.id === project.currentRevision) || {}).label || '') + '"?\nNext change will require a new revision.')) closeRevision(); }}
-                        >
-                            <Icons.X />
-                        </button>
                     )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -2192,9 +2228,17 @@ export default function App() {
                     <div style={{ display: 'flex', gap: '8px' }}>
                         <button
                             style={{ ...styles.smallButton, backgroundColor: '#f59e0b', color: '#000', fontWeight: '600' }}
-                            onClick={() => setViewingRevisionId(null)}>
-                            Return to Current
+                            onClick={() => {
+                                if (projectReadOnly && !checkedOutBy) {
+                                    // Opened revision from dashboard — go back to dashboard
+                                    closeProjectDirect(false);
+                                } else {
+                                    setViewingRevisionId(null);
+                                }
+                            }}>
+                            {projectReadOnly && !checkedOutBy ? 'Back to Projects' : 'Return to Current'}
                         </button>
+                        {!projectReadOnly && (
                         <button
                             style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c' }}
                             onClick={() => {
@@ -2204,6 +2248,7 @@ export default function App() {
                             }}>
                             <Icons.RotateCcw /> Restore This Revision
                         </button>
+                        )}
                     </div>
                 </div>
             )}
@@ -2654,7 +2699,7 @@ export default function App() {
                 )}
             </main>
 
-            {showSearch && <SearchModal catalog={catalog} packages={packages} projectPackages={project.packages || []} onClose={() => { setShowSearch(false); setReplaceContext(null); }} onInsert={replaceContext ? (items) => handleReplaceSelect(items[0]) : checkDiscontinuedAndInsert} onInsertPkg={replaceContext?.isPackage ? (pkg) => handleReplaceSelect(pkg) : insertPkg} replaceMode={!!replaceContext} replaceIsPackage={replaceContext?.isPackage} />}
+            {showSearch && <SearchModal catalog={catalog} packages={packages} projectPackages={project.packages || []} onClose={() => { setShowSearch(false); setReplaceContext(null); }} onInsert={replaceContext ? (items) => handleReplaceSelect(items[0]) : checkDiscontinuedAndInsert} onInsertPkg={replaceContext?.isPackage ? (pkg) => handleReplaceSelect(pkg) : insertPkg} replaceMode={!!replaceContext} replaceIsPackage={replaceContext?.isPackage} readOnly={projectReadOnly || isViewingHistory} onReadOnlyBlock={() => isProjectEditable()} />}
 
             {/* Replace Confirmation Modal */}
             {showReplaceConfirm && (
@@ -2727,9 +2772,8 @@ export default function App() {
             {showRevisionPrompt && (
                 <RevisionPromptModal
                     project={pendingRevisionProjectId ? (projects.find(p => p.id === pendingRevisionProjectId) || project) : project}
-                    onClose={() => { setShowRevisionPrompt(false); setPendingMutation(null); setPendingRevisionProjectId(null); setRevisionPromptLabelOverride(null); setRevisionPromptManualCreate(false); }}
+                    onClose={() => { setShowRevisionPrompt(false); setPendingRevisionProjectId(null); setRevisionPromptManualCreate(false); }}
                     onCreateRevision={createRevision}
-                    suggestedLabelOverride={revisionPromptLabelOverride}
                     manualCreate={revisionPromptManualCreate}
                 />
             )}
@@ -2891,12 +2935,27 @@ export default function App() {
                 />
             )}
             
-            {/* Toast Notification */}
-            {toast && (
-                <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', padding: '12px 24px', borderRadius: '12px', backgroundColor: '#1a3d2e', border: '1px solid #2d4a3e', color: '#00ba7c', fontSize: '14px', fontWeight: '500', zIndex: 2000 }}>
-                    {toast}
-                </div>
+            {/* Checkin Modal */}
+            {showCheckinModal && (
+                <CheckoutModal
+                    mode="checkin"
+                    projectName={project.name}
+                    onCheckin={() => closeProjectDirect(true)}
+                    onKeepCheckedOut={() => closeProjectDirect(false)}
+                    onClose={() => setShowCheckinModal(false)}
+                />
             )}
+
+            {/* Toast Notification */}
+            {toast && (() => {
+                const isWarning = typeof toast === 'object' && toast.type === 'warning';
+                const msg = typeof toast === 'object' ? toast.msg : toast;
+                return (
+                    <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', padding: '12px 24px', borderRadius: '12px', backgroundColor: isWarning ? '#3d2e1a' : '#1a3d2e', border: `1px solid ${isWarning ? '#4a3520' : '#2d4a3e'}`, color: isWarning ? '#f59e0b' : '#00ba7c', fontSize: '14px', fontWeight: '500', zIndex: 2000 }}>
+                        {msg}
+                    </div>
+                );
+            })()}
         </div>
     );
 }
