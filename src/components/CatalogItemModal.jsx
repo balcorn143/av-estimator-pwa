@@ -51,7 +51,7 @@ export default function CatalogItemModal({ item, onClose, onSave, categories, ca
     };
 
     const updateAccQty = (catalogId, newQty) => {
-        setDefaultAccessories(prev => prev.map(a => a.catalogId === catalogId ? { ...a, qtyPer: Math.max(1, parseInt(newQty) || 1) } : a));
+        setDefaultAccessories(prev => prev.map(a => a.catalogId === catalogId ? { ...a, qtyPer: Math.max(0.01, parseFloat(newQty) || 1) } : a));
     };
 
     const [newCategory, setNewCategory] = useState('');
@@ -186,7 +186,8 @@ export default function CatalogItemModal({ item, onClose, onSave, categories, ca
                                         <div key={acc.catalogId} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', backgroundColor: '#1a1f26', borderRadius: '6px', marginBottom: '4px', border: '1px solid #2f3336' }}>
                                             <input
                                                 type="number"
-                                                min="1"
+                                                step="any"
+                                                min="0.01"
                                                 value={acc.qtyPer}
                                                 onChange={e => updateAccQty(acc.catalogId, e.target.value)}
                                                 onFocus={e => e.target.select()}

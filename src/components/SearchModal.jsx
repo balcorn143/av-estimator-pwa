@@ -490,11 +490,12 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
                     <label style={{ fontSize: '14px', color: '#8b98a5' }}>Qty:</label>
                     <input
                         type="number"
+                        step="any"
                         value={qty}
-                        onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+                        onChange={e => setQty(Math.max(0.01, parseFloat(e.target.value) || 1))}
                         onFocus={e => e.target.select()}
                         style={{ ...styles.inputSmall, width: '70px' }}
-                        min="1"
+                        min="0.01"
                     />
                     <div style={{ flex: 1 }} />
                     {tab === 'components' && <span style={{ fontSize: '12px', color: '#6e767d' }}>

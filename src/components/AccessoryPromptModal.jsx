@@ -17,7 +17,7 @@ export default function AccessoryPromptModal({ component, accessories, qty, cata
 
     const updateAccessoryQty = (idx, newQty) => {
         setSelectedAccessories(prev => prev.map((acc, i) =>
-            i === idx ? { ...acc, qty: Math.max(0, parseInt(newQty) || 0) } : acc
+            i === idx ? { ...acc, qty: Math.max(0, parseFloat(newQty) || 0) } : acc
         ));
     };
 
@@ -85,6 +85,7 @@ export default function AccessoryPromptModal({ component, accessories, qty, cata
                                 </div>
                                 <input
                                     type="number"
+                                    step="any"
                                     value={acc.qty}
                                     onChange={e => updateAccessoryQty(idx, e.target.value)}
                                     style={{ ...styles.inputSmall, width: '60px' }}

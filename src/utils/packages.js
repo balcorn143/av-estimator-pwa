@@ -11,10 +11,22 @@ export function resolvePackageInstance(instance, catalogPkgs, projectPkgs) {
     if (!def) return { definition: null, isOutOfDate: false, isMissing: true, expandedItems: [], totalCost: 0, totalLabor: 0 };
 
     const multiplier = instance.qty || 1;
-    const expandedItems = (def.items || []).map(item => ({
-        ...item,
-        qty: (item.qtyPerPackage || item.qty || 1) * multiplier,
-    }));
+    const overrides = instance.itemOverrides || {};
+    const pkgSystem = instance.system || '';
+    const expandedItems = (def.items || []).map((item, idx) => {
+        const override = overrides[idx];
+        const qtyPer = override?.qtyPerPackage !== undefined ? override.qtyPerPackage : (item.qtyPerPackage || item.qty || 1);
+        const hasSystemOverride = override?.system !== undefined;
+        const system = hasSystemOverride ? override.system : (pkgSystem || item.system);
+        return {
+            ...item,
+            qty: qtyPer * multiplier,
+            qtyPerPackage: qtyPer,
+            _hasOverride: override?.qtyPerPackage !== undefined,
+            _hasSystemOverride: hasSystemOverride,
+            ...(system !== undefined ? { system } : {}),
+        };
+    });
 
     let totalCost = 0, totalLabor = 0;
     expandedItems.forEach(item => {
@@ -31,7 +43,7 @@ export function resolvePackageInstance(instance, catalogPkgs, projectPkgs) {
 
     return {
         definition: def,
-        isOutOfDate: (def.version || 1) > (instance.packageVersion || 1),
+        isOutOfDate: false,
         isMissing: false,
         expandedItems,
         totalCost,

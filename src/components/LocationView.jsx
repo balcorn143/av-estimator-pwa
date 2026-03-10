@@ -9,12 +9,49 @@ import { SYSTEM_OPTIONS, DEFAULT_COLUMNS } from '../constants'
 import ColumnLayoutManager from './ColumnLayoutManager'
 import useFlexibleColumns from '../hooks/useFlexibleColumns'
 
-export default function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage, searchFilter }) {
+export default function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage, searchFilter, onEditPackage }) {
     const [selectedItems, setSelectedItems] = useState([]);
     const [expandedItems, setExpandedItems] = useState({}); // Track which items are expanded (by index)
     const [expandedPackages, setExpandedPackages] = useState({}); // Track which packages are expanded
     const [allExpanded, setAllExpanded] = useState(true);
     const [contextMenu, setContextMenu] = useState(null); // { x, y, itemIdx, isAccessory, accIdx, isPackage, packageName }
+    const [sortField, setSortField] = useState(null);
+    const [sortDir, setSortDir] = useState('asc');
+    const [systemFilter, setSystemFilter] = useState('');
+
+    const handleSort = (field) => {
+        if (sortField === field) {
+            setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        } else {
+            setSortField(field);
+            setSortDir('asc');
+        }
+    };
+
+    const SortIcon = ({ field }) => {
+        if (sortField !== field) return null;
+        return sortDir === 'asc' ? <Icons.ChevronUp /> : <Icons.ChevronDown />;
+    };
+
+    const sortItems = (items, getItem) => {
+        if (!sortField) return items;
+        return [...items].sort((a, b) => {
+            const itemA = getItem ? getItem(a) : a;
+            const itemB = getItem ? getItem(b) : b;
+            let aVal = itemA[sortField];
+            let bVal = itemB[sortField];
+            if (sortField === 'extCost') { aVal = (itemA.qty || 0) * (itemA.unitCost || 0); bVal = (itemB.qty || 0) * (itemB.unitCost || 0); }
+            if (sortField === 'extLabor') { aVal = (itemA.qty || 0) * (itemA.laborHrsPerUnit || 0); bVal = (itemB.qty || 0) * (itemB.laborHrsPerUnit || 0); }
+            if (sortField === 'unitLabor') { aVal = itemA.laborHrsPerUnit; bVal = itemB.laborHrsPerUnit; }
+            if (aVal == null) aVal = '';
+            if (bVal == null) bVal = '';
+            if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+            if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+            if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+            if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+            return 0;
+        });
+    };
 
     // Compact mode styles
     const compactStyles = {
@@ -53,7 +90,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                     </button>
                 )}</td>;
             case 'qty':
-                return <td key={col.id} style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(itemIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} min="0" /></td>;
+                return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingQty[itemIdx] !== undefined ? editingQty[itemIdx] : item.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeQty(itemIdx, e.target.value); }} onBlur={() => blurQty(itemIdx)} onFocus={e => { focusQty(itemIdx, item.qty); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} /></td>;
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(itemIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             case 'system':
@@ -73,9 +110,9 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                     {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
                 </td>;
             case 'unitCost':
-                return <td key={col.id} style={tdStyle}><input type="number" step="0.01" min="0" value={editingCost[itemIdx] !== undefined ? editingCost[itemIdx] : (item.unitCost || 0)} onChange={e => changeUnitCost(itemIdx, e.target.value)} onBlur={() => blurUnitCost(itemIdx)} onFocus={e => { focusUnitCost(itemIdx, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right' }} /></td>;
+                return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingCost[itemIdx] !== undefined ? editingCost[itemIdx] : (item.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitCost(itemIdx, e.target.value); }} onBlur={() => blurUnitCost(itemIdx)} onFocus={e => { focusUnitCost(itemIdx, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right' }} /></td>;
             case 'unitLabor':
-                return <td key={col.id} style={tdStyle}><input type="number" step="0.25" min="0" value={editingLabor[itemIdx] !== undefined ? editingLabor[itemIdx] : (item.laborHrsPerUnit || 0)} onChange={e => changeUnitLabor(itemIdx, e.target.value)} onBlur={() => blurUnitLabor(itemIdx)} onFocus={e => { focusUnitLabor(itemIdx, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '55px' : '65px', textAlign: 'right' }} /></td>;
+                return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingLabor[itemIdx] !== undefined ? editingLabor[itemIdx] : (item.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitLabor(itemIdx, e.target.value); }} onBlur={() => blurUnitLabor(itemIdx)} onFocus={e => { focusUnitLabor(itemIdx, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '55px' : '65px', textAlign: 'right' }} /></td>;
             case 'extCost':
                 return <td key={col.id} style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: compactMode ? '11px' : '12px' }}>{fmtCost(itemTotal.cost)}</td>;
             case 'extLabor':
@@ -94,8 +131,10 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                 return <td key={col.id} style={tdStyle}></td>;
             case 'expand':
                 return <td key={col.id} style={tdStyle}></td>;
-            case 'qty':
-                return <td key={col.id} style={{ ...tdStyle, paddingLeft: pkgColor ? '40px' : '24px' }}><input type="number" value={acc.qty} onChange={e => changeAccessoryQty(itemIdx, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} min="0" /></td>;
+            case 'qty': {
+                const accQtyKey = `${itemIdx}-${accIdx}`;
+                return <td key={col.id} style={{ ...tdStyle, paddingLeft: pkgColor ? '40px' : '24px' }}><input type="text" inputMode="decimal" value={editingAccQty[accQtyKey] !== undefined ? editingAccQty[accQtyKey] : acc.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccessoryQty(itemIdx, accIdx, e.target.value); }} onBlur={() => blurAccQty(itemIdx, accIdx)} onFocus={e => { focusAccQty(itemIdx, accIdx, acc.qty); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} /></td>;
+            }
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(itemIdx, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
             case 'system':
@@ -108,11 +147,11 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                 return <td key={col.id} style={tdStyle}>{acc.description}</td>;
             case 'unitCost': {
                 const accKey = `${itemIdx}-${accIdx}`;
-                return <td key={col.id} style={tdStyle}><input type="number" step="0.01" min="0" value={editingAccCost[accKey] !== undefined ? editingAccCost[accKey] : (acc.unitCost || 0)} onChange={e => changeAccessoryUnitCost(itemIdx, accIdx, e.target.value)} onBlur={() => blurAccessoryUnitCost(itemIdx, accIdx)} onFocus={e => { focusAccCost(itemIdx, accIdx, acc.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
+                return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingAccCost[accKey] !== undefined ? editingAccCost[accKey] : (acc.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccessoryUnitCost(itemIdx, accIdx, e.target.value); }} onBlur={() => blurAccessoryUnitCost(itemIdx, accIdx)} onFocus={e => { focusAccCost(itemIdx, accIdx, acc.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             }
             case 'unitLabor': {
                 const accKey = `${itemIdx}-${accIdx}`;
-                return <td key={col.id} style={tdStyle}><input type="number" step="0.25" min="0" value={editingAccLabor[accKey] !== undefined ? editingAccLabor[accKey] : (acc.laborHrsPerUnit || 0)} onChange={e => changeAccessoryUnitLabor(itemIdx, accIdx, e.target.value)} onBlur={() => blurAccessoryUnitLabor(itemIdx, accIdx)} onFocus={e => { focusAccLabor(itemIdx, accIdx, acc.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '55px' : '65px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
+                return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingAccLabor[accKey] !== undefined ? editingAccLabor[accKey] : (acc.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccessoryUnitLabor(itemIdx, accIdx, e.target.value); }} onBlur={() => blurAccessoryUnitLabor(itemIdx, accIdx)} onFocus={e => { focusAccLabor(itemIdx, accIdx, acc.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '55px' : '65px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             }
             case 'extCost':
                 return <td key={col.id} style={{ ...tdStyle, color: '#4a6e4a' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>;
@@ -203,23 +242,27 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
         return { packages: packageInstances, legacyPackages: Object.values(legacyPackages), standalone };
     }, [location.items, catalogPkgs, projectPkgs]);
 
-    // Apply search filter to visible items
+    // Apply search filter and system filter to visible items
     const filteredStandalone = useMemo(() => {
-        if (!searchFilter) return groupedItems.standalone;
-        return groupedItems.standalone.filter(({ item }) => itemMatchesSearch(item, searchFilter));
-    }, [groupedItems.standalone, searchFilter]);
+        let items = groupedItems.standalone;
+        if (searchFilter) items = items.filter(({ item }) => itemMatchesSearch(item, searchFilter));
+        if (systemFilter) items = items.filter(({ item }) => (item.system || '') === systemFilter);
+        return sortItems(items, ({ item }) => item);
+    }, [groupedItems.standalone, searchFilter, systemFilter, sortField, sortDir]);
     const filteredPackages = useMemo(() => {
-        if (!searchFilter) return groupedItems.packages;
-        return groupedItems.packages.filter(pkg =>
+        let pkgs = groupedItems.packages;
+        if (searchFilter) pkgs = pkgs.filter(pkg =>
             itemMatchesSearch({ manufacturer: pkg.name, model: '', description: '' }, searchFilter) ||
             pkg.expandedItems?.some(item => itemMatchesSearch(item, searchFilter))
         );
+        return pkgs;
     }, [groupedItems.packages, searchFilter]);
     const filteredLegacyPackages = useMemo(() => {
-        if (!searchFilter) return groupedItems.legacyPackages;
-        return groupedItems.legacyPackages.filter(pkg =>
+        let pkgs = groupedItems.legacyPackages;
+        if (searchFilter) pkgs = pkgs.filter(pkg =>
             pkg.items.some(item => itemMatchesSearch(item, searchFilter))
         );
+        return pkgs;
     }, [groupedItems.legacyPackages, searchFilter]);
     // Collect all visible item indices for select-all
     const visibleIndices = useMemo(() => {
@@ -263,16 +306,23 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     };
 
     const changeQty = (itemIdx, q) => {
+        setEditingQty(prev => ({ ...prev, [itemIdx]: q }));
+    };
+    const focusQty = (itemIdx, currentVal) => {
+        setEditingQty(prev => ({ ...prev, [itemIdx]: String(currentVal ?? 0) }));
+    };
+    const blurQty = (itemIdx) => {
+        const raw = editingQty[itemIdx];
+        setEditingQty(prev => { const n = { ...prev }; delete n[itemIdx]; return n; });
+        const newQty = Math.max(0, parseFloat(raw) || 0);
         const items = [...location.items];
-        const newQty = Math.max(0, parseInt(q) || 0);
         items[itemIdx] = { ...items[itemIdx], qty: newQty };
-        // Also scale accessories proportionally if they exist
         if (items[itemIdx].accessories) {
             const oldQty = location.items[itemIdx].qty || 1;
             const ratio = newQty / oldQty;
             items[itemIdx].accessories = items[itemIdx].accessories.map(acc => ({
                 ...acc,
-                qty: Math.round((acc.qty || 0) * ratio) || acc.qtyPer || 1
+                qty: parseFloat(((acc.qty || 0) * ratio).toFixed(4)) || acc.qtyPer || 1
             }));
         }
         onUpdate(location.id, items);
@@ -328,6 +378,10 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     const [editingLabor, setEditingLabor] = useState({}); // { [itemIdx]: string }
     const [editingAccCost, setEditingAccCost] = useState({}); // { [`${itemIdx}-${accIdx}`]: string }
     const [editingAccLabor, setEditingAccLabor] = useState({}); // { [`${itemIdx}-${accIdx}`]: string }
+    const [editingQty, setEditingQty] = useState({}); // { [itemIdx]: string }
+    const [editingAccQty, setEditingAccQty] = useState({}); // { [`${itemIdx}-${accIdx}`]: string }
+    const [editingPkgQty, setEditingPkgQty] = useState({}); // { [pkgIdx]: string }
+    const [editingPkgItemQty, setEditingPkgItemQty] = useState({}); // { [`${pkgIdx}-${itemIdx}`]: string }
 
     const focusUnitCost = (itemIdx, currentVal) => {
         setEditingCost(prev => ({ ...prev, [itemIdx]: String(currentVal || 0) }));
@@ -398,9 +452,18 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     };
 
     const changeAccessoryQty = (itemIdx, accIdx, q) => {
+        setEditingAccQty(prev => ({ ...prev, [`${itemIdx}-${accIdx}`]: q }));
+    };
+    const focusAccQty = (itemIdx, accIdx, currentVal) => {
+        setEditingAccQty(prev => ({ ...prev, [`${itemIdx}-${accIdx}`]: String(currentVal ?? 0) }));
+    };
+    const blurAccQty = (itemIdx, accIdx) => {
+        const key = `${itemIdx}-${accIdx}`;
+        const raw = editingAccQty[key];
+        setEditingAccQty(prev => { const n = { ...prev }; delete n[key]; return n; });
         const items = [...location.items];
         const accessories = [...items[itemIdx].accessories];
-        accessories[accIdx] = { ...accessories[accIdx], qty: Math.max(0, parseInt(q) || 0) };
+        accessories[accIdx] = { ...accessories[accIdx], qty: Math.max(0, parseFloat(raw) || 0) };
         items[itemIdx] = { ...items[itemIdx], accessories };
         onUpdate(location.id, items);
     };
@@ -467,23 +530,24 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     const lastClickedIdx = useRef(null);
     const toggleSelect = (idx, e) => {
         if (e && e.shiftKey && lastClickedIdx.current !== null) {
-            // Shift+Click: select range between last clicked and current
-            const start = Math.min(lastClickedIdx.current, idx);
-            const end = Math.max(lastClickedIdx.current, idx);
-            const range = [];
-            for (let i = start; i <= end; i++) range.push(i);
-            setSelectedItems(prev => {
-                const combined = new Set([...prev, ...range]);
-                return [...combined];
-            });
+            // Shift+Click: select range in visible display order (don't move anchor)
+            const lastPos = visibleIndices.indexOf(lastClickedIdx.current);
+            const curPos = visibleIndices.indexOf(idx);
+            if (lastPos !== -1 && curPos !== -1) {
+                const start = Math.min(lastPos, curPos);
+                const end = Math.max(lastPos, curPos);
+                const range = visibleIndices.slice(start, end + 1);
+                setSelectedItems(range);
+            }
         } else if (e && (e.ctrlKey || e.metaKey)) {
             // Ctrl+Click: toggle individual
             setSelectedItems(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]);
+            lastClickedIdx.current = idx;
         } else {
             // Normal click on checkbox: toggle individual
             setSelectedItems(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]);
+            lastClickedIdx.current = idx;
         }
-        lastClickedIdx.current = idx;
     };
     const selectAll = () => {
         if (searchFilter) {
@@ -636,6 +700,10 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                             )}
                             {clipboard.length > 0 && <button style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c' }} onClick={handlePaste}><Icons.Clipboard /> Paste ({clipboard.length})</button>}
                             {templates && templates.length > 0 && <button style={{ ...styles.smallButton, backgroundColor: '#2d1a3d', color: '#a78bfa' }} onClick={onApplyTemplate}><Icons.Template /> Apply Template</button>}
+                            <select value={systemFilter} onChange={e => setSystemFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
+                                <option value="">All Systems</option>
+                                {SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
                             <button style={styles.button('primary')} onClick={onSearch}><Icons.Plus /> Add</button>
                             <button style={{ ...styles.smallButton, backgroundColor: '#2a1f0a', color: '#f59e0b', border: '1px solid #f59e0b40' }} onClick={addEmptyItem} title="Add empty placeholder line item"><Icons.Plus /> Empty Item</button>
                         </div>
@@ -663,14 +731,15 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                             onDragLeave={onDragLeave}
                                             onDrop={e => onDrop(colIndex, e)}
                                             onDragEnd={onDragEnd}
+                                            onClick={() => { if (!col.fixed) handleSort(col.id); }}
                                         >
                                             {col.id === 'checkbox' ? (
                                                 <input type="checkbox" checked={searchFilter ? (visibleIndices.length > 0 && visibleIndices.every(i => selectedItems.includes(i))) : (selectedItems.length === mainItemCount && mainItemCount > 0)} onChange={selectAll} />
-                                            ) : col.label}
+                                            ) : <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>{col.label}{!col.fixed && <SortIcon field={col.id} />}</span>}
                                             {!col.fixed && (
                                                 <div
                                                     style={styles.resizeHandle}
-                                                    onMouseDown={e => startResize(colIndex, e)}
+                                                    onMouseDown={e => { e.stopPropagation(); startResize(colIndex, e); }}
                                                     onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
                                                     onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
                                                 />
@@ -690,8 +759,37 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
 
                                     // Handler to change package instance qty
                                     const changePkgQty = (val) => {
+                                        setEditingPkgQty(prev => ({ ...prev, [pkg.idx]: val }));
+                                    };
+                                    const focusPkgQty = () => {
+                                        setEditingPkgQty(prev => ({ ...prev, [pkg.idx]: String(pkg.qty ?? 1) }));
+                                    };
+                                    const blurPkgQty = () => {
+                                        const raw = editingPkgQty[pkg.idx];
+                                        setEditingPkgQty(prev => { const n = { ...prev }; delete n[pkg.idx]; return n; });
                                         const items = [...location.items];
-                                        items[pkg.idx] = { ...items[pkg.idx], qty: Math.max(1, parseInt(val) || 1) };
+                                        items[pkg.idx] = { ...items[pkg.idx], qty: Math.max(0.01, parseFloat(raw) || 1) };
+                                        onUpdate(location.id, items);
+                                    };
+
+                                    // Per-instance item qty override
+                                    const changePkgItemQty = (pkgItemIdx, val) => {
+                                        setEditingPkgItemQty(prev => ({ ...prev, [`${pkg.idx}-${pkgItemIdx}`]: val }));
+                                    };
+                                    const focusPkgItemQty = (pkgItemIdx, currentVal) => {
+                                        setEditingPkgItemQty(prev => ({ ...prev, [`${pkg.idx}-${pkgItemIdx}`]: String(currentVal ?? 0) }));
+                                    };
+                                    const blurPkgItemQty = (pkgItemIdx) => {
+                                        const key = `${pkg.idx}-${pkgItemIdx}`;
+                                        const raw = editingPkgItemQty[key];
+                                        setEditingPkgItemQty(prev => { const n = { ...prev }; delete n[key]; return n; });
+                                        const newTotalQty = Math.max(0, parseFloat(raw) || 0);
+                                        const perPkg = pkg.qty ? newTotalQty / pkg.qty : newTotalQty;
+                                        const items = [...location.items];
+                                        const instance = items[pkg.idx];
+                                        const overrides = { ...(instance.itemOverrides || {}) };
+                                        overrides[pkgItemIdx] = { ...(overrides[pkgItemIdx] || {}), qtyPerPackage: perPkg };
+                                        items[pkg.idx] = { ...instance, itemOverrides: overrides };
                                         onUpdate(location.id, items);
                                     };
 
@@ -705,12 +803,13 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                     const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px' };
                                                     if (col.id === 'checkbox') return <td key={col.id} style={tdS}><input type="checkbox" checked={isSelected} onChange={e => togglePkgSelect(e)} /></td>;
                                                     if (col.id === 'expand') return <td key={col.id} style={tdS}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>;
-                                                    if (col.id === 'qty') return <td key={col.id} style={tdS}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, ...compactStyles.input, width: '60px', fontWeight: '700' }} min="1" /></td>;
+                                                    if (col.id === 'qty') return <td key={col.id} style={tdS}><input type="text" inputMode="decimal" value={editingPkgQty[pkg.idx] !== undefined ? editingPkgQty[pkg.idx] : pkg.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changePkgQty(e.target.value); }} onBlur={blurPkgQty} onFocus={e => { focusPkgQty(); e.target.select(); }} style={{ ...styles.inputSmall, ...compactStyles.input, width: '60px', fontWeight: '700' }} /></td>;
                                                     if (col.id === 'manufacturer' || col.id === 'notes') return <td key={col.id} style={{ ...tdS, fontWeight: '700' }} colSpan={col.id === 'notes' ? 1 : undefined}>
-                                                        {col.id === 'notes' ? '' : <><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isOutOfDate && <span style={{ color: '#f59e0b', fontSize: '11px' }} title="Package definition has been updated">outdated</span>} {pkg.isMissing && <span style={{ color: '#f87171', fontSize: '11px' }}>missing</span>}</>}
+                                                        {col.id === 'notes' ? '' : <><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isMissing && <span style={{ color: '#f87171', fontSize: '11px' }}>missing</span>}</>}
                                                     </td>;
                                                     if (col.id === 'model') return <td key={col.id} style={tdS}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items x {pkg.qty}</span></td>;
                                                     if (col.id === 'description') return <td key={col.id} style={tdS}>{pkg.instance.notes || ''}</td>;
+                                                    if (col.id === 'system') return <td key={col.id} style={tdS}><select value={location.items[pkg.idx].system || ''} onChange={e => { const items = [...location.items]; items[pkg.idx] = { ...items[pkg.idx], system: e.target.value }; onUpdate(location.id, items); }} style={{ ...styles.inputSmall, ...compactStyles.input, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>;
                                                     if (col.id === 'extCost') return <td key={col.id} style={{ ...tdS, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>;
                                                     if (col.id === 'extLabor' || col.id === 'labor') return <td key={col.id} style={tdS}>{fmtHrs(pkg.labor)}</td>;
                                                     return <td key={col.id} style={tdS}></td>;
@@ -726,10 +825,22 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                         const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px', color: '#8b98a5', fontSize: '12px' };
                                                         if (col.id === 'checkbox') return <td key={col.id} style={tdS}></td>;
                                                         if (col.id === 'expand') return <td key={col.id} style={tdS}></td>;
-                                                        if (col.id === 'qty') return <td key={col.id} style={tdS}>{fmtQty(item.qty)}</td>;
-                                                        if (col.id === 'notes') return <td key={col.id} style={tdS}><span style={{ fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}x{pkg.qty}</span></td>;
+                                                        if (col.id === 'qty') {
+                                                            const eKey = `${pkg.idx}-${itemIdx}`;
+                                                            return <td key={col.id} style={tdS}>
+                                                                <input type="text" inputMode="decimal"
+                                                                    value={editingPkgItemQty[eKey] !== undefined ? editingPkgItemQty[eKey] : item.qty}
+                                                                    onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changePkgItemQty(itemIdx, e.target.value); }}
+                                                                    onBlur={() => blurPkgItemQty(itemIdx)}
+                                                                    onFocus={e => { focusPkgItemQty(itemIdx, item.qty); e.target.select(); }}
+                                                                    style={{ ...styles.inputSmall, ...compactStyles.input, width: compactMode ? '50px' : '60px', color: item._hasOverride ? '#f59e0b' : '#8b98a5' }}
+                                                                />
+                                                            </td>;
+                                                        }
+                                                        if (col.id === 'notes') return <td key={col.id} style={tdS}><span style={{ fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}x{pkg.qty}{item._hasOverride ? ' (edited)' : ''}</span></td>;
                                                         if (col.id === 'manufacturer') return <td key={col.id} style={tdS}>{item.manufacturer}</td>;
                                                         if (col.id === 'model') return <td key={col.id} style={{ ...tdS, color: '#1d9bf0' }}>{item.model}</td>;
+                                                        if (col.id === 'system') return <td key={col.id} style={tdS}><select value={item.system || ''} onChange={e => { const val = e.target.value; const items = [...location.items]; const instance = items[pkg.idx]; const overrides = { ...(instance.itemOverrides || {}) }; const defaultSys = instance.system || ''; if (val === defaultSys) { if (overrides[itemIdx]) { const o = { ...overrides[itemIdx] }; delete o.system; overrides[itemIdx] = Object.keys(o).length ? o : undefined; if (!overrides[itemIdx]) delete overrides[itemIdx]; } } else { overrides[itemIdx] = { ...(overrides[itemIdx] || {}), system: val }; } items[pkg.idx] = { ...instance, itemOverrides: overrides }; onUpdate(location.id, items); }} style={{ ...styles.inputSmall, ...compactStyles.input, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px', color: item._hasSystemOverride ? '#f59e0b' : '#8b98a5' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>;
                                                         if (col.id === 'description') return <td key={col.id} style={tdS}>{item.description}</td>;
                                                         if (col.id === 'unitCost') return <td key={col.id} style={tdS}>{fmtCost(item.unitCost || 0)}</td>;
                                                         if (col.id === 'unitLabor') return <td key={col.id} style={tdS}>{fmtHrs(item.laborHrsPerUnit || 0)}</td>;
@@ -868,6 +979,29 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                     {contextMenu.isPackage ? (
                         // Package context menu
                         <>
+                            {(() => {
+                                const pkgItem = location.items[contextMenu.itemIdx];
+                                const packageId = pkgItem?.packageId;
+                                return packageId ? (
+                                    <>
+                                        <button
+                                            style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                            onClick={() => { setExpandedPackages(prev => ({ ...prev, [contextMenu.packageName]: true })); setContextMenu(null); }}>
+                                            <Icons.Edit /> Edit This Instance
+                                        </button>
+                                        {onEditPackage && <button
+                                            style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                            onClick={() => { onEditPackage(packageId); setContextMenu(null); }}>
+                                            <Icons.Package /> Edit All Copies
+                                        </button>}
+                                        <div style={{ borderTop: '1px solid #2f3336', margin: '4px 0' }} />
+                                    </>
+                                ) : null;
+                            })()}
                             {onReplacePackage && (
                                 <button
                                     style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}

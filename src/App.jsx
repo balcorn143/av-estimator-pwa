@@ -10,9 +10,12 @@ import { generateCatalogId, calculateTotals, itemMatchesSearch } from './utils/c
 import { generatePackageId, resolvePackageInstance, findAllPackageInstances, getFlattenedItems, migrateProjectPackages, migratePackageDefinitions } from './utils/packages'
 import { generateEsticomWorkbook, generateProcoreEstimateWorkbook } from './utils/export'
 import * as XLSX from 'xlsx'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import useFlexibleColumns from './hooks/useFlexibleColumns'
 import ColumnLayoutManager from './components/ColumnLayoutManager'
 import LocationTree from './components/LocationTree'
+import MoveLocationModal from './components/MoveLocationModal'
 import LocationView from './components/LocationView'
 import AllLocationsView from './components/AllLocationsView'
 import ProjectsHome from './components/ProjectsHome'
@@ -90,6 +93,7 @@ export default function App() {
     const [showNewProjectModal, setShowNewProjectModal] = useState(false);
     const [showDashboardCatalog, setShowDashboardCatalog] = useState(false);
     const [dashboardCatalogTab, setDashboardCatalogTab] = useState('components');
+    const [projectCatalogTab, setProjectCatalogTab] = useState('components');
     const [team, setTeam] = useState(null);
     const [showTeamModal, setShowTeamModal] = useState(false);
     const hasLoaded = React.useRef(false);
@@ -105,6 +109,7 @@ export default function App() {
     
     // Current project state (when a project is open)
     const [tab, setTab] = useState('project');
+    const [editPackageId, setEditPackageId] = useState(null);
     const [catalog, setCatalog] = useState([]);
     const [catalogSyncStatus, setCatalogSyncStatus] = useState('loading');
     const [catalogDirty, setCatalogDirty] = useState(false);
@@ -123,7 +128,6 @@ export default function App() {
         if (team && !catalogInitializedRef.current) {
             loadCatalogData();
         }
-        loadPackagesData();
     }, [team]);
     
     // Helper to apply team customizations (edits, deletions, favorites, notes) to base catalog
@@ -221,30 +225,21 @@ export default function App() {
         setCatalogDirty(false);
     };
     
-    const loadPackagesData = async () => {
+    // Seed packages from static JSON — only used for first-time setup when no data exists anywhere
+    const seedPackagesFromStatic = async () => {
         try {
             const response = await fetch(getDataUrl(CONFIG.PACKAGES_FILE));
             if (response.ok) {
                 const data = await response.json();
-                setPackages(data);
-                localStorage.setItem('av-estimator-packages', JSON.stringify(data));
-                return;
+                if (data?.length > 0) {
+                    setPackages(data);
+                    return true;
+                }
             }
         } catch (e) {
-            console.log('Failed to fetch remote packages, using local');
+            console.log('Failed to fetch seed packages');
         }
-        
-        // Fall back to localStorage
-        const saved = localStorage.getItem('av-estimator-packages');
-        if (saved) {
-            try {
-                setPackages(JSON.parse(saved));
-                return;
-            } catch (e) {}
-        }
-        
-        // Empty packages
-        setPackages([]);
+        return false;
     };
     
     // Refresh catalog: pull coworker changes from Supabase and merge with local catalog.
@@ -350,6 +345,34 @@ export default function App() {
         return count;
     }, [effectiveLocations]);
     const [compactMode, setCompactMode] = useState(true); // Compact layout toggle - default to compact
+    const [sidebarWidth, setSidebarWidth] = useState(() => {
+        const saved = localStorage.getItem('av-estimator-sidebar-width');
+        return saved ? Math.max(200, Math.min(600, parseInt(saved))) : 360;
+    });
+    const sidebarResizing = React.useRef(false);
+    const startSidebarResize = useCallback((e) => {
+        e.preventDefault();
+        sidebarResizing.current = true;
+        const startX = e.clientX;
+        const startWidth = sidebarWidth;
+        const onMouseMove = (e) => {
+            const newWidth = Math.max(200, Math.min(600, startWidth + (e.clientX - startX)));
+            setSidebarWidth(newWidth);
+        };
+        const onMouseUp = () => {
+            sidebarResizing.current = false;
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            // Persist
+            setSidebarWidth(w => { localStorage.setItem('av-estimator-sidebar-width', String(w)); return w; });
+        };
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    }, [sidebarWidth]);
     const [showSearch, setShowSearch] = useState(false);
     const [searchTargetLocation, setSearchTargetLocation] = useState(null); // For all-locations mode
     const [replaceContext, setReplaceContext] = useState(null); // { itemIdx, locationId, item, isPackage, packageName }
@@ -359,6 +382,7 @@ export default function App() {
     const [showDuplicate, setShowDuplicate] = useState(false);
     const [duplicateTarget, setDuplicateTarget] = useState(null); // Location to duplicate (null = use selected)
     const [showDelete, setShowDelete] = useState(false);
+    const [moveModalLocations, setMoveModalLocations] = useState(null); // Array of locations to move
     const [clipboard, setClipboard] = useState([]);
     const [locationSearch, setLocationSearch] = useState('');
     const [expandedLocations, setExpandedLocations] = useState({});
@@ -366,6 +390,21 @@ export default function App() {
     const [templates, setTemplates] = useState([]);
     const [multiSelectLocations, setMultiSelectLocations] = useState([]);
     const lastMultiSelectLocRef = useRef(null);
+    // Flat ordered list of visible locations in the tree (respects search + expand state)
+    const flatVisibleLocations = useMemo(() => {
+        const topLevel = locationSearch ? filterLocations(effectiveLocations, locationSearch) : effectiveLocations;
+        const flatten = (locs) => {
+            let result = [];
+            for (const l of locs) {
+                result.push(l);
+                if (l.children?.length > 0 && expandedLocations[l.id]) {
+                    result = result.concat(flatten(l.children));
+                }
+            }
+            return result;
+        };
+        return flatten(topLevel);
+    }, [effectiveLocations, locationSearch, expandedLocations]);
     const [deleteTargets, setDeleteTargets] = useState([]); // For delete modal - can be single or multiple
     const [showSavePackage, setShowSavePackage] = useState(false);
     const [showSaveTemplate, setShowSaveTemplate] = useState(false);
@@ -401,6 +440,14 @@ export default function App() {
     // Report state
     const [showLaborByPhase, setShowLaborByPhase] = useState(true);
     const [reportHierarchyDepth, setReportHierarchyDepth] = useState(-1);
+    const [showBom, setShowBom] = useState(true);
+
+    const [bomSortField, setBomSortField] = useState(null);
+    const [bomSortDir, setBomSortDir] = useState('asc');
+    const [bomSearch, setBomSearch] = useState('');
+    const [bomCategoryFilter, setBomCategoryFilter] = useState('');
+    const [bomEditingCell, setBomEditingCell] = useState(null); // 'key|field'
+    const [bomEditingValue, setBomEditingValue] = useState(''); // local value while typing
 
     // History for undo/redo
     const [history, setHistory] = useState([]);
@@ -877,9 +924,24 @@ export default function App() {
                     console.error('Sync error:', err);
                     setSyncStatus('error');
                 }
-            }, 2000);
+            }, 500);
         }
     }, [projects, packages, templates, activeProjectId, viewingRevisionId, projectReadOnly, team]);
+
+    // Flush pending saves before tab/window close
+    useEffect(() => {
+        const handleBeforeUnload = () => {
+            if (!hasLoaded.current) return;
+            const data = { projects, packages, templates, activeProjectId, viewingRevisionId: viewingRevisionId || undefined, revisionReadOnly: (projectReadOnly && !checkedOutBy) || undefined };
+            localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
+            // Use sendBeacon for reliable Supabase sync on close
+            if (supabase && session) {
+                clearTimeout(syncTimer.current);
+            }
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [projects, packages, templates, activeProjectId, viewingRevisionId, projectReadOnly]);
 
     // Manual save — flush localStorage + immediate Supabase sync (Ctrl+S / Save button)
     const saveNow = React.useCallback(async () => {
@@ -999,13 +1061,13 @@ export default function App() {
         hasLoaded.current = true;
     }, []);
 
-    // Sync with Supabase after login
+    // Sync with Supabase after login — Supabase is the single source of truth
     useEffect(() => {
         if (!supabase || !session || !hasLoaded.current) return;
         const syncFromSupabase = async () => {
             setSyncStatus('syncing');
             try {
-                // Pull remote projects — filter by team or user
+                // Pull remote projects — Supabase wins
                 let projQuery = supabase.from('projects').select('id, data, updated_at');
                 if (team) {
                     projQuery = projQuery.eq('team_id', team.id);
@@ -1015,18 +1077,15 @@ export default function App() {
                 const { data: remoteRows, error: projErr } = await projQuery;
                 if (!projErr && remoteRows?.length > 0) {
                     const remote = remoteRows.map(r => r.data);
+                    // Supabase is authoritative: start with remote, add any local-only projects
                     setProjects(prev => {
-                        const merged = {};
-                        [...prev, ...remote].forEach(p => {
-                            if (!merged[p.id] || new Date(p.updatedAt) > new Date(merged[p.id].updatedAt)) {
-                                merged[p.id] = p;
-                            }
-                        });
-                        return Object.values(merged);
+                        const remoteIds = new Set(remote.map(p => p.id));
+                        const localOnly = prev.filter(p => !remoteIds.has(p.id));
+                        return [...remote, ...localOnly];
                     });
                 }
 
-                // Pull remote packages/templates — filter by team or user
+                // Pull remote packages/templates — Supabase is authoritative
                 let settQuery = supabase.from('user_settings').select('packages, templates');
                 if (team) {
                     settQuery = settQuery.eq('team_id', team.id);
@@ -1035,19 +1094,23 @@ export default function App() {
                 }
                 const { data: settings } = await settQuery.maybeSingle();
                 if (settings) {
-                    // Merge packages by ID — newer updatedAt wins (supports multi-device sync)
                     if (settings.packages?.length > 0) {
+                        // Supabase packages are the source of truth — replace local
+                        setPackages(settings.packages);
+                    } else {
+                        // Supabase has no packages — seed from static file if local is also empty
                         setPackages(prev => {
-                            const merged = {};
-                            [...prev, ...settings.packages].forEach(p => {
-                                if (!merged[p.id] || new Date(p.updatedAt || 0) > new Date(merged[p.id].updatedAt || 0)) {
-                                    merged[p.id] = p;
-                                }
-                            });
-                            return Object.values(merged);
+                            if (prev.length === 0) { seedPackagesFromStatic(); }
+                            return prev;
                         });
                     }
-                    if (settings.templates && Object.keys(settings.templates).length > 0) setTemplates(prev => Object.keys(prev).length > 0 ? prev : settings.templates);
+                    if (settings.templates && Object.keys(settings.templates).length > 0) setTemplates(settings.templates);
+                } else {
+                    // No user_settings row at all — first time user, seed packages
+                    setPackages(prev => {
+                        if (prev.length === 0) { seedPackagesFromStatic(); }
+                        return prev;
+                    });
                 }
 
                 // Pull catalog customizations if on a team (includes edits, deletions, favorites, notes)
@@ -1086,6 +1149,7 @@ export default function App() {
             } catch (err) {
                 console.error('Supabase sync error:', err);
                 setSyncStatus('error');
+                showToast('Failed to sync with server — working from local cache', 'warning');
             }
         };
         syncFromSupabase();
@@ -1108,16 +1172,26 @@ export default function App() {
         if (historyIndex > 0) {
             isUndoRedo.current = true;
             setHistoryIndex(historyIndex - 1);
-            setProject(JSON.parse(history[historyIndex - 1]));
+            const restored = JSON.parse(history[historyIndex - 1]);
+            setProject(restored);
+            if (selected) {
+                const findLoc = (locs, id) => { for (const l of (locs || [])) { if (l.id === id) return l; if (l.children) { const f = findLoc(l.children, id); if (f) return f; } } return null; };
+                setSelected(findLoc(restored.locations, selected.id) || null);
+            }
             showToast('Undo');
         }
     };
-    
+
     const redo = () => {
         if (historyIndex < history.length - 1) {
             isUndoRedo.current = true;
             setHistoryIndex(historyIndex + 1);
-            setProject(JSON.parse(history[historyIndex + 1]));
+            const restored = JSON.parse(history[historyIndex + 1]);
+            setProject(restored);
+            if (selected) {
+                const findLoc = (locs, id) => { for (const l of (locs || [])) { if (l.id === id) return l; if (l.children) { const f = findLoc(l.children, id); if (f) return f; } } return null; };
+                setSelected(findLoc(restored.locations, selected.id) || null);
+            }
             showToast('Redo');
         }
     };
@@ -1205,6 +1279,94 @@ export default function App() {
         showToast('Consolidated BOM exported');
     };
 
+    // Export Technician BOM as PDF - per-location item list grouped by report hierarchy
+    const exportTechnicianBOM = () => {
+      try {
+        const projectName = (project.name || 'Project').trim();
+
+        let groups;
+        if (reportHierarchyDepth === -1) {
+            // Entire Project: single consolidated BOM
+            const allLocs = getLocationsWithItems(effectiveLocations);
+            groups = allLocs.length > 0 ? [{ name: projectName + ' — Consolidated BOM', locations: allLocs }] : [];
+        } else {
+            groups = getGroupedByHierarchy(effectiveLocations, reportHierarchyDepth, packages, effectivePackages || []);
+        }
+
+        if (groups.length === 0) { showToast('No locations with components to export'); return; }
+
+        const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
+        let firstPage = true;
+
+        for (const group of groups) {
+            // Consolidate items by unique key
+            const partMap = {};
+            const partOrder = [];
+            const addItem = (item) => {
+                const key = item.partNumber || ((item.manufacturer || '') + '|' + (item.model || ''));
+                if (partMap[key]) {
+                    partMap[key].qty += (item.qty || 0);
+                } else {
+                    partMap[key] = { qty: item.qty || 0, manufacturer: item.manufacturer || '', model: item.model || '', partNumber: item.partNumber || '', description: item.description || '' };
+                    partOrder.push(key);
+                }
+            };
+            for (const loc of group.locations) {
+                const flat = getFlattenedItems(loc, packages, effectivePackages || []);
+                for (const item of flat) {
+                    addItem(item);
+                    if (item.accessories) {
+                        for (const acc of item.accessories) addItem(acc);
+                    }
+                }
+            }
+            if (partOrder.length === 0) continue;
+
+            if (!firstPage) doc.addPage();
+            firstPage = false;
+
+            // Header
+            doc.setFontSize(10);
+            doc.setTextColor(120);
+            doc.text(projectName, 40, 30);
+            doc.setFontSize(16);
+            doc.setTextColor(0);
+            doc.text(group.name, 40, 52);
+
+            const rows = partOrder.map(key => partMap[key]);
+            rows.sort((a, b) => (a.manufacturer || '').localeCompare(b.manufacturer || '', undefined, { sensitivity: 'base' }));
+            const bodyData = rows.map(p => [p.qty, p.manufacturer, p.model, p.partNumber, p.description]);
+
+            autoTable(doc, {
+                startY: 65,
+                head: [['QTY', 'Manufacturer', 'Model', 'Part Number', 'Description']],
+                body: bodyData,
+                margin: { left: 40, right: 40 },
+                styles: { fontSize: 9, cellPadding: 4, lineColor: [200, 200, 200], lineWidth: 0.5 },
+                headStyles: { fillColor: [41, 50, 60], textColor: 255, fontStyle: 'bold' },
+                bodyStyles: { fillColor: [255, 255, 255] },
+                alternateRowStyles: { fillColor: [235, 238, 242] },
+                columnStyles: {
+                    0: { halign: 'center', cellWidth: 40 },
+                    1: { cellWidth: 120 },
+                    2: { cellWidth: 140 },
+                    3: { cellWidth: 120 },
+                    4: { cellWidth: 'auto' },
+                },
+            });
+        }
+
+        if (firstPage) { showToast('No locations with components to export'); return; }
+
+        const safeFilename = projectName.replace(/[<>:"/\\|?*]/g, '-');
+        doc.save(safeFilename + ' - Technician BOM.pdf');
+        showToast(`Technician BOM exported (${groups.length} location${groups.length !== 1 ? 's' : ''})`);
+      } catch (err) {
+        console.error('Technician BOM export error:', err);
+        showToast('Export failed: ' + (err.message || 'Unknown error'));
+      }
+    };
+
     // Export complete estimate in Procore Estimating import format
     const exportProcoreEstimate = () => {
         const projectName = (project.name || 'Project').replace(/[<>:"/\\|?*]/g, '-').trim();
@@ -1272,6 +1434,10 @@ export default function App() {
 
     // Update unit cost or labor across all matching items in all locations (and package definitions)
     const updateConsolidatedField = (partKey, field, value) => {
+        // Always update local editing value so the input reflects what user typed
+        setBomEditingValue(value);
+        // Don't propagate intermediate typing states (e.g. "", "0.", "0.0", "0.00")
+        if (value === '' || /\.$/.test(value) || /\.\d*0$/.test(value)) return;
         const numVal = parseFloat(value);
         if (isNaN(numVal) || numVal < 0) return;
         const updateLocs = (locs) => locs.map(loc => {
@@ -1315,20 +1481,6 @@ export default function App() {
             locations: updateLocs(p.locations),
             packages: p.packages ? updatePkgItems(p.packages) : p.packages,
         }));
-    };
-
-    // Sync all instances of a package to a specific version
-    const syncPackageInstances = (packageId, newVersion) => {
-        const updateLocs = (locs) => locs.map(loc => ({
-            ...loc,
-            items: (loc.items || []).map(item =>
-                item.type === 'package' && item.packageId === packageId
-                    ? { ...item, packageVersion: newVersion }
-                    : item
-            ),
-            children: loc.children ? updateLocs(loc.children) : loc.children,
-        }));
-        setProject(p => ({ ...p, locations: updateLocs(p.locations) }));
     };
 
     // Global keyboard shortcuts
@@ -1574,6 +1726,49 @@ export default function App() {
         if (loc) showToast(`Demoted "${loc.name}"`);
     };
 
+    const moveLocationTo = (targetId) => {
+        // targetId is null for top-level, or a location ID to move into
+        if (!moveModalLocations || moveModalLocations.length === 0) return;
+        const movingIds = new Set(moveModalLocations.map(l => l.id));
+
+        const removeLocations = (locs) => {
+            const removed = [];
+            const remaining = [];
+            for (const l of locs) {
+                if (movingIds.has(l.id)) {
+                    removed.push(l);
+                } else {
+                    const childResult = l.children?.length > 0 ? removeLocations(l.children) : { remaining: l.children || [], removed: [] };
+                    remaining.push({ ...l, children: childResult.remaining });
+                    removed.push(...childResult.removed);
+                }
+            }
+            return { remaining, removed };
+        };
+
+        setProject(p => {
+            const { remaining, removed } = removeLocations(p.locations);
+            if (removed.length === 0) return p;
+
+            if (targetId === null) {
+                // Move to top level
+                return { ...p, locations: [...remaining, ...removed] };
+            }
+            // Insert into target's children
+            const insertInto = (locs) => locs.map(l => {
+                if (l.id === targetId) {
+                    return { ...l, children: [...(l.children || []), ...removed] };
+                }
+                return l.children?.length > 0 ? { ...l, children: insertInto(l.children) } : l;
+            });
+            return { ...p, locations: insertInto(remaining) };
+        });
+
+        const names = moveModalLocations.map(l => l.name).join(', ');
+        showToast(`Moved ${names}`);
+        setMoveModalLocations(null);
+    };
+
     const updateItems = (id, items) => {
         const upd = locs => locs.map(l => l.id === id ? { ...l, items } : l.children ? { ...l, children: upd(l.children) } : l);
         if (!setProject(p => ({ ...p, locations: upd(p.locations) }))) return;
@@ -1744,16 +1939,30 @@ export default function App() {
     };
     
     // Ungroup a package - remove packageName from all items in the package
-    const handleUngroupPackage = (packageName) => {
-        if (!selected) return;
-        const items = selected.items.map(item => {
-            if (item.packageName === packageName) {
+    const handleUngroupPackage = (packageName, locationId) => {
+        const targetId = locationId || (selected ? selected.id : null);
+        const targetLoc = targetId ? findLocation(project.locations, targetId) : null;
+        if (!targetLoc) return;
+        const newItems = [];
+        for (const item of targetLoc.items) {
+            if (item.type === 'package' && item.packageName === packageName) {
+                // New-style package: expand into individual items
+                const resolved = resolvePackageInstance(item, packages, effectivePackages);
+                if (resolved && !resolved.isMissing) {
+                    resolved.expandedItems.forEach(ei => {
+                        const { qtyPerPackage, ...rest } = ei;
+                        newItems.push(rest);
+                    });
+                }
+            } else if (item.packageName === packageName) {
+                // Legacy package: just strip packageName
                 const { packageName: _, ...rest } = item;
-                return rest;
+                newItems.push(rest);
+            } else {
+                newItems.push(item);
             }
-            return item;
-        });
-        updateItems(selected.id, items);
+        }
+        updateItems(targetId, newItems);
         showToast(`Package "${packageName}" ungrouped`);
     };
     
@@ -2042,7 +2251,7 @@ export default function App() {
                                 onUpdateProjectPackages={() => {}}
                                 catalog={catalog}
                                 locations={[]}
-                                onSyncInstances={() => {}}
+                                compactMode={compactMode}
                             />
                         )}
                     </main>
@@ -2263,7 +2472,7 @@ export default function App() {
             <main style={styles.main}>
                 {tab === 'project' && (
                     <>
-                        <aside style={styles.sidebar}>
+                        <aside style={{ ...styles.sidebar, width: sidebarWidth + 'px', position: 'relative' }}>
                             <div style={styles.sidebarHeader}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                     <span style={{ fontSize: '13px', fontWeight: '600', color: '#8b98a5', textTransform: 'uppercase', letterSpacing: '1px' }}>Locations</span>
@@ -2306,14 +2515,9 @@ export default function App() {
                             {!isViewingHistory && multiSelectLocations.length > 0 && (
                                 <div style={{ ...styles.sidebarActions, borderTop: 'none', paddingTop: 0, flexWrap: 'wrap', gap: '4px' }}>
                                     <button
-                                        style={{ ...styles.smallButton, flex: '1 1 auto', backgroundColor: '#1a2e1a', color: '#4ade80', fontSize: '11px' }}
-                                        onClick={() => { multiSelectLocations.forEach(loc => promoteLocation(loc.id)); setMultiSelectLocations([]); }}>
-                                        <Icons.ChevronLeft /> Promote ({multiSelectLocations.length})
-                                    </button>
-                                    <button
-                                        style={{ ...styles.smallButton, flex: '1 1 auto', backgroundColor: '#1a2e3d', color: '#60a5fa', fontSize: '11px' }}
-                                        onClick={() => { multiSelectLocations.forEach(loc => demoteLocation(loc.id)); setMultiSelectLocations([]); }}>
-                                        <Icons.ChevronRight /> Demote ({multiSelectLocations.length})
+                                        style={{ ...styles.smallButton, flex: '1 1 auto', backgroundColor: '#1a2a3d', color: '#1d9bf0', fontSize: '11px' }}
+                                        onClick={() => setMoveModalLocations([...multiSelectLocations])}>
+                                        <Icons.Location /> Move to... ({multiSelectLocations.length})
                                     </button>
                                     <button
                                         style={{ ...styles.smallButton, flex: '1 1 100%', backgroundColor: '#3d1a1a', color: '#f87171' }}
@@ -2345,7 +2549,7 @@ export default function App() {
                                     <LocationTree
                                         locations={effectiveLocations}
                                         selectedId={selected?.id} 
-                                        onSelect={(loc) => { setMultiSelectLocations([]); setSelected(loc); }}
+                                        onSelect={(loc) => { setMultiSelectLocations([]); setSelected(loc); lastMultiSelectLocRef.current = loc.id; }}
                                         onDelete={(loc) => { setDeleteTargets([loc]); setShowDelete(true); }}
                                         onRename={renameLocation}
                                         onDuplicate={(loc) => { setDuplicateTarget(loc); setShowDuplicate(true); }}
@@ -2353,33 +2557,20 @@ export default function App() {
                                         onMoveDown={moveLocationDown}
                                         onPromote={promoteLocation}
                                         onDemote={demoteLocation}
+                                        onMoveTo={(loc) => setMoveModalLocations([loc])}
                                         multiSelect={multiSelectLocations}
                                         onMultiSelectToggle={(loc, e) => {
                                             if (e?.shiftKey && lastMultiSelectLocRef.current) {
-                                                // Shift+click: select range of visible locations
-                                                const flattenVisible = (locs) => {
-                                                    let result = [];
-                                                    for (const l of locs) {
-                                                        result.push(l);
-                                                        if (l.children?.length > 0 && expandedLocations[l.id]) {
-                                                            result = result.concat(flattenVisible(l.children));
-                                                        }
-                                                    }
-                                                    return result;
-                                                };
-                                                const flat = flattenVisible(effectiveLocations);
-                                                const idxA = flat.findIndex(l => l.id === lastMultiSelectLocRef.current);
-                                                const idxB = flat.findIndex(l => l.id === loc.id);
+                                                // Shift+click: select range from anchor (don't move anchor)
+                                                const idxA = flatVisibleLocations.findIndex(l => l.id === lastMultiSelectLocRef.current);
+                                                const idxB = flatVisibleLocations.findIndex(l => l.id === loc.id);
                                                 if (idxA !== -1 && idxB !== -1) {
                                                     const start = Math.min(idxA, idxB);
                                                     const end = Math.max(idxA, idxB);
-                                                    const range = flat.slice(start, end + 1);
-                                                    setMultiSelectLocations(prev => {
-                                                        const combined = [...prev];
-                                                        range.forEach(r => { if (!combined.some(c => c.id === r.id)) combined.push(r); });
-                                                        return combined;
-                                                    });
+                                                    const range = flatVisibleLocations.slice(start, end + 1);
+                                                    setMultiSelectLocations(range);
                                                 }
+                                                // Don't update anchor — shift-click extends from the original anchor
                                             } else {
                                                 // Ctrl+click: toggle individual
                                                 setMultiSelectLocations(prev =>
@@ -2387,8 +2578,8 @@ export default function App() {
                                                         ? prev.filter(l => l.id !== loc.id)
                                                         : [...prev, loc]
                                                 );
+                                                lastMultiSelectLocRef.current = loc.id;
                                             }
-                                            lastMultiSelectLocRef.current = loc.id;
                                         }}
                                         searchTerm={locationSearch}
                                         expandedState={expandedLocations}
@@ -2400,6 +2591,17 @@ export default function App() {
                                     <div style={{ padding: '30px 20px', textAlign: 'center', color: '#6e767d', fontSize: '14px' }}>No locations yet.<br />Click "Add Locations" above.</div>
                                 )}
                             </div>
+                            {/* Sidebar resize handle */}
+                            <div
+                                onMouseDown={startSidebarResize}
+                                style={{
+                                    position: 'absolute', right: 0, top: 0, bottom: 0, width: '4px',
+                                    cursor: 'col-resize', backgroundColor: 'transparent', zIndex: 10,
+                                    transition: 'background-color 0.15s',
+                                }}
+                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1d9bf0'}
+                                onMouseLeave={e => { if (!sidebarResizing.current) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                            />
                         </aside>
 
                         <section style={styles.content}>
@@ -2486,6 +2688,7 @@ export default function App() {
                                         onReplaceItem={(itemIdx) => handleReplaceItem(itemIdx)}
                                         onReplacePackage={(packageName, itemIdx) => handleReplacePackage(packageName, itemIdx)}
                                         searchFilter={workspaceSearch}
+                                        onEditPackage={(pkgId) => { setTab('packages'); setEditPackageId(pkgId); }}
                                     />
                                 ) : (
                                     <div style={styles.emptyState}>
@@ -2552,6 +2755,7 @@ export default function App() {
                                     onReplaceItem={(itemIdx, locationId) => handleReplaceItem(itemIdx, locationId)}
                                     onReplacePackage={(packageName, itemIdx, locationId) => handleReplacePackage(packageName, itemIdx, locationId)}
                                     searchFilter={workspaceSearch}
+                                    onEditPackage={(pkgId) => { setTab('packages'); setEditPackageId(pkgId); }}
                                 />
                             )}
                         </section>
@@ -2560,18 +2764,35 @@ export default function App() {
 
                 {tab === 'catalog' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
-                        <CatalogView
-                            catalog={catalog}
-                            onUpdateCatalog={updateCatalog}
-                            onRefreshCatalog={refreshCatalog}
-                            onSaveCatalog={saveCatalog}
-                            syncStatus={catalogSyncStatus}
-                            catalogDirty={catalogDirty}
-                            compactMode={compactMode}
-                        />
+                        <nav style={{ display: 'flex', gap: '4px', marginBottom: '16px' }}>
+                            <button style={styles.navButton(projectCatalogTab === 'components')} onClick={() => setProjectCatalogTab('components')}>Components</button>
+                            <button style={styles.navButton(projectCatalogTab === 'packages')} onClick={() => setProjectCatalogTab('packages')}>Packages ({packages.length + (effectivePackages || []).length})</button>
+                        </nav>
+                        {projectCatalogTab === 'components' && (
+                            <CatalogView
+                                catalog={catalog}
+                                onUpdateCatalog={updateCatalog}
+                                onRefreshCatalog={refreshCatalog}
+                                onSaveCatalog={saveCatalog}
+                                syncStatus={catalogSyncStatus}
+                                catalogDirty={catalogDirty}
+                                compactMode={compactMode}
+                            />
+                        )}
+                        {projectCatalogTab === 'packages' && (
+                            <PackagesView
+                                catalogPackages={packages}
+                                projectPackages={effectivePackages || []}
+                                onUpdateCatalogPackages={setPackages}
+                                onUpdateProjectPackages={setProjectDirect}
+                                catalog={catalog}
+                                locations={effectiveLocations || []}
+                                compactMode={compactMode}
+                            />
+                        )}
                     </section>
                 )}
-                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={effectivePackages || []} onUpdateCatalogPackages={setPackages} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={effectiveLocations || []} onSyncInstances={syncPackageInstances} /></section>}
+                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={effectivePackages || []} onUpdateCatalogPackages={setPackages} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={effectiveLocations || []} compactMode={compactMode} initialSelectedPkgId={editPackageId} onInitialPkgConsumed={() => setEditPackageId(null)} /></section>}
                 {tab === 'reports' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
@@ -2602,99 +2823,183 @@ export default function App() {
                                 <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Single BOM with all components across locations.</p>
                                 <button style={styles.button('primary')} onClick={exportConsolidatedBOM}><Icons.Download /> Export</button>
                             </div>
+                            {/* Technician BOM */}
+                            <div style={styles.card}>
+                                <div style={styles.cardTitle}>Technician BOM</div>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>PDF item list for field techs. One page per {reportHierarchyDepth === -1 ? 'location' : 'group'}.</p>
+                                <button style={styles.button('primary')} onClick={exportTechnicianBOM}><Icons.Download /> Export PDF</button>
+                            </div>
                             {/* Export to Procore Estimating */}
                             <div style={styles.card}>
                                 <div style={styles.cardTitle}>Procore Estimating Import</div>
                                 <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Complete estimate with location sheets, labor, and phase codes.</p>
                                 <button style={styles.button('primary')} onClick={exportProcoreEstimate}><Icons.Download /> Export</button>
                             </div>
-                            {/* Labor by Phase */}
-                            <div style={styles.card}>
-                                <div style={styles.cardTitle}>Labor by Phase</div>
-                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Labor hours breakdown by phase per location/group.</p>
-                                <button style={styles.button('primary')} onClick={() => setShowLaborByPhase(!showLaborByPhase)}>{showLaborByPhase ? 'Hide' : 'Show'} Report</button>
-                            </div>
                         </div>
 
                         {/* Editable Consolidated BOM Table */}
                         {(() => {
-                            const bomItems = getConsolidatedBOM();
-                            if (bomItems.length === 0) return <p style={{ color: '#8b98a5' }}>No components in project. Add items to locations to see the consolidated BOM.</p>;
+                            const bomItemsRaw = getConsolidatedBOM();
+                            if (bomItemsRaw.length === 0) return <p style={{ color: '#8b98a5' }}>No components in project. Add items to locations to see the consolidated BOM.</p>;
+
+                            // Collect unique categories for filter
+                            const bomCategories = [...new Set(bomItemsRaw.map(b => b.category).filter(Boolean))].sort();
+
+                            // Apply search + category filter
+                            let bomItems = bomItemsRaw;
+                            if (bomSearch.length >= 2) {
+                                const term = bomSearch.toLowerCase();
+                                bomItems = bomItems.filter(b =>
+                                    (b.manufacturer || '').toLowerCase().includes(term) ||
+                                    (b.model || '').toLowerCase().includes(term) ||
+                                    (b.partNumber || '').toLowerCase().includes(term) ||
+                                    (b.description || '').toLowerCase().includes(term)
+                                );
+                            }
+                            if (bomCategoryFilter) {
+                                bomItems = bomItems.filter(b => b.category === bomCategoryFilter);
+                            }
+
+                            // Apply sorting
+                            if (bomSortField) {
+                                bomItems = [...bomItems].sort((a, b) => {
+                                    let aVal, bVal;
+                                    if (bomSortField === 'qty') { aVal = a.totalQty; bVal = b.totalQty; }
+                                    else if (bomSortField === 'extCost') { aVal = a.totalQty * a.unitCost; bVal = b.totalQty * b.unitCost; }
+                                    else if (bomSortField === 'extLabor') { aVal = a.totalQty * a.laborHrsPerUnit; bVal = b.totalQty * b.laborHrsPerUnit; }
+                                    else { aVal = a[bomSortField]; bVal = b[bomSortField]; }
+                                    if (aVal == null) aVal = '';
+                                    if (bVal == null) bVal = '';
+                                    if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+                                    if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+                                    if (aVal < bVal) return bomSortDir === 'asc' ? -1 : 1;
+                                    if (aVal > bVal) return bomSortDir === 'asc' ? 1 : -1;
+                                    return 0;
+                                });
+                            }
+
                             let totalCost = 0, totalLabor = 0;
                             bomItems.forEach(b => { totalCost += b.totalQty * b.unitCost; totalLabor += b.totalQty * b.laborHrsPerUnit; });
+
+                            const bomTdStyle = { ...styles.td, ...(compactMode ? { padding: '4px 8px', fontSize: '11px' } : {}) };
+                            const bomThStyle = { ...styles.th, ...styles.thResizable, ...(compactMode ? { padding: '6px 8px', fontSize: '10px' } : {}) };
+                            const bomInputStyle = compactMode ? { ...styles.input, width: '70px', padding: '2px 6px', fontSize: '11px', textAlign: 'right' } : { ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' };
+
+                            const handleBomSort = (field) => {
+                                if (bomSortField === field) { setBomSortDir(d => d === 'asc' ? 'desc' : 'asc'); }
+                                else { setBomSortField(field); setBomSortDir('asc'); }
+                            };
+                            const BomSortIcon = ({ field }) => {
+                                if (bomSortField !== field) return null;
+                                return bomSortDir === 'asc' ? <Icons.ChevronUp /> : <Icons.ChevronDown />;
+                            };
+
                             return (
                                 <div>
-                                    <h3 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        Consolidated BOM
-                                        <span style={{ fontSize: '13px', color: '#8b98a5', fontWeight: '400' }}>({fmtQty(bomItems.length)} unique items — {fmtCost(totalCost)} — {fmtHrs(totalLabor)})</span>
-                                    </h3>
-                                    <p style={{ color: '#8b98a5', fontSize: '13px', margin: '0 0 12px 0' }}>Edit Unit Cost or Unit Labor below to update all matching items across all locations.</p>
-                                    <div style={{ overflowX: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
-                                        <table style={{ ...styles.table, fontSize: '13px' }}>
-                                            <colgroup>
-                                                {bomCols.map(col => <col key={col.id} style={{ width: col.width }} />)}
-                                            </colgroup>
-                                            <thead>
-                                                <tr style={{ background: '#161b22' }}>
-                                                    {bomCols.map((col, colIndex) => (
-                                                        <th key={col.id} style={{ ...styles.th, ...styles.thResizable }}>
-                                                            {col.label}
-                                                            <div
-                                                                style={styles.resizeHandle}
-                                                                onMouseDown={e => startBomResize(colIndex, e)}
-                                                                onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
-                                                                onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
-                                                            />
-                                                        </th>
-                                                    ))}
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {bomItems.map((b, idx) => {
-                                                    return (
-                                                        <React.Fragment key={b.key}>
-                                                            <tr style={{ borderBottom: '1px solid #2f3336' }} title={b.locations.join(', ')}>
+                                    {/* Header with collapse toggle */}
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: showBom ? '12px' : '0' }}>
+                                        <h3 style={{ margin: 0, fontSize: '20px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => setShowBom(v => !v)}>
+                                            <span style={{ display: 'flex', transition: 'transform 0.15s' }}>{showBom ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</span>
+                                            Consolidated BOM
+                                            <span style={{ fontSize: '13px', color: '#8b98a5', fontWeight: '400' }}>({fmtQty(bomItemsRaw.length)} unique items — {fmtCost(totalCost)} — {fmtHrs(totalLabor)})</span>
+                                        </h3>
+                                        {showBom && (
+                                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {showBom && (
+                                        <>
+                                            <p style={{ color: '#8b98a5', fontSize: '13px', margin: '0 0 12px 0' }}>Click any Unit Cost or Unit Labor value to edit it. Changes apply to all matching items across all locations.</p>
+                                            {/* Search + Category filter */}
+                                            <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' }}>
+                                                <div style={{ position: 'relative', flex: 1, maxWidth: '300px' }}>
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Search BOM..."
+                                                        value={bomSearch}
+                                                        onChange={e => setBomSearch(e.target.value)}
+                                                        style={{ ...styles.inputSmall, width: '100%', paddingLeft: '32px' }}
+                                                    />
+                                                    <div style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#6e767d' }}><Icons.Search /></div>
+                                                    {bomSearch && <button style={{ ...styles.iconButton, position: 'absolute', right: '4px', top: '50%', transform: 'translateY(-50%)' }} onClick={() => setBomSearch('')}><Icons.X /></button>}
+                                                </div>
+                                                {bomCategories.length > 0 && (
+                                                    <select value={bomCategoryFilter} onChange={e => setBomCategoryFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer' }}>
+                                                        <option value="">All Categories</option>
+                                                        {bomCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                                                    </select>
+                                                )}
+                                                {(bomSearch || bomCategoryFilter) && (
+                                                    <span style={{ fontSize: '12px', color: '#8b98a5' }}>{bomItems.length} of {bomItemsRaw.length} items</span>
+                                                )}
+                                            </div>
+                                            <div style={{ overflowX: 'auto', border: '1px solid #2f3336', borderRadius: '8px' }}>
+                                                <table style={{ ...styles.table, fontSize: compactMode ? '11px' : '13px' }}>
+                                                    <colgroup>
+                                                        {bomCols.map(col => <col key={col.id} style={{ width: col.width }} />)}
+                                                    </colgroup>
+                                                    <thead>
+                                                        <tr style={{ background: '#161b22' }}>
+                                                            {bomCols.map((col, colIndex) => (
+                                                                <th key={col.id} style={{ ...bomThStyle, cursor: 'pointer' }} onClick={() => handleBomSort(col.id)}>
+                                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>{col.label}<BomSortIcon field={col.id} /></span>
+                                                                    <div
+                                                                        style={styles.resizeHandle}
+                                                                        onMouseDown={e => { e.stopPropagation(); startBomResize(colIndex, e); }}
+                                                                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
+                                                                        onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
+                                                                    />
+                                                                </th>
+                                                            ))}
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {bomItems.map((b, idx) => (
+                                                            <tr key={b.key} style={{ borderBottom: '1px solid #2f3336' }} title={b.locations.join(', ')}
+                                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1e2d3d'}
+                                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}>
                                                                 {bomCols.map(col => {
                                                                     switch (col.id) {
-                                                                        case 'qty': return <td key={col.id} style={styles.td}>{fmtQty(b.totalQty)}</td>;
-                                                                        case 'manufacturer': return <td key={col.id} style={styles.td}>{b.manufacturer}</td>;
-                                                                        case 'model': return <td key={col.id} style={{ ...styles.td, fontWeight: '600' }}>{b.model}</td>;
-                                                                        case 'partNumber': return <td key={col.id} style={{ ...styles.td, fontSize: '12px', color: '#8b98a5' }}>{b.partNumber}</td>;
-                                                                        case 'description': return <td key={col.id} style={styles.td}>{b.description}</td>;
-                                                                        case 'unitCost': return <td key={col.id} style={styles.td}><input type="number" step="0.01" min="0" value={b.unitCost} onChange={e => updateConsolidatedField(b.key, 'unitCost', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} /></td>;
-                                                                        case 'laborHrsPerUnit': return <td key={col.id} style={styles.td}><input type="number" step="0.01" min="0" value={b.laborHrsPerUnit} onChange={e => updateConsolidatedField(b.key, 'laborHrsPerUnit', e.target.value)} style={{ ...styles.input, width: '80px', padding: '4px 6px', fontSize: '12px', textAlign: 'right' }} /></td>;
-                                                                        case 'extCost': return <td key={col.id} style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(b.totalQty * b.unitCost)}</td>;
-                                                                        case 'extLabor': return <td key={col.id} style={styles.td}>{fmtHrs(b.totalQty * b.laborHrsPerUnit)}</td>;
-                                                                        default: return <td key={col.id} style={styles.td}></td>;
+                                                                        case 'qty': return <td key={col.id} style={bomTdStyle}>{fmtQty(b.totalQty)}</td>;
+                                                                        case 'manufacturer': return <td key={col.id} style={bomTdStyle}>{b.manufacturer}</td>;
+                                                                        case 'model': return <td key={col.id} style={{ ...bomTdStyle, fontWeight: '600' }}>{b.model}</td>;
+                                                                        case 'partNumber': return <td key={col.id} style={{ ...bomTdStyle, fontSize: compactMode ? '10px' : '12px', color: '#8b98a5' }}>{b.partNumber}</td>;
+                                                                        case 'description': return <td key={col.id} style={bomTdStyle}>{b.description}</td>;
+                                                                        case 'unitCost': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|unitCost' ? <input type="text" inputMode="decimal" value={bomEditingValue} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) updateConsolidatedField(b.key, 'unitCost', v); }} onBlur={() => setBomEditingCell(null)} onKeyDown={e => { if (e.key === 'Enter') setBomEditingCell(null); }} onFocus={e => e.target.select()} style={bomInputStyle} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|unitCost'); setBomEditingValue(String(b.unitCost || 0)); }} style={{ cursor: 'pointer', display: 'block', textAlign: 'right' }}>{fmtCost(b.unitCost)}</span>}</td>;
+                                                                        case 'laborHrsPerUnit': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|laborHrsPerUnit' ? <input type="text" inputMode="decimal" value={bomEditingValue} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) updateConsolidatedField(b.key, 'laborHrsPerUnit', v); }} onBlur={() => setBomEditingCell(null)} onKeyDown={e => { if (e.key === 'Enter') setBomEditingCell(null); }} onFocus={e => e.target.select()} style={bomInputStyle} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|laborHrsPerUnit'); setBomEditingValue(String(b.laborHrsPerUnit || 0)); }} style={{ cursor: 'pointer', display: 'block', textAlign: 'right' }}>{fmtHrs(b.laborHrsPerUnit)}</span>}</td>;
+                                                                        case 'extCost': return <td key={col.id} style={{ ...bomTdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(b.totalQty * b.unitCost)}</td>;
+                                                                        case 'extLabor': return <td key={col.id} style={bomTdStyle}>{fmtHrs(b.totalQty * b.laborHrsPerUnit)}</td>;
+                                                                        default: return <td key={col.id} style={bomTdStyle}></td>;
                                                                     }
                                                                 })}
                                                             </tr>
-                                                        </React.Fragment>
-                                                    );
-                                                })}
-                                                <tr style={{ background: '#161b22', fontWeight: '700' }}>
-                                                    <td colSpan={bomCols.length - 2} style={{ ...styles.td, textAlign: 'right' }}>TOTALS</td>
-                                                    <td style={{ ...styles.td, color: '#00ba7c' }}>{fmtCost(totalCost)}</td>
-                                                    <td style={styles.td}>{fmtHrs(totalLabor)}</td>
-                                                </tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
+                                                        ))}
+                                                        <tr style={{ background: '#161b22', fontWeight: '700' }}>
+                                                            <td colSpan={bomCols.length - 2} style={{ ...bomTdStyle, textAlign: 'right' }}>TOTALS</td>
+                                                            <td style={{ ...bomTdStyle, color: '#00ba7c' }}>{fmtCost(totalCost)}</td>
+                                                            <td style={bomTdStyle}>{fmtHrs(totalLabor)}</td>
+                                                        </tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             );
                         })()}
 
                         {/* Labor by Phase Report */}
-                        {showLaborByPhase && (
-                            <div style={{ marginTop: '24px' }}>
-                                <LaborByPhaseReport
-                                    locations={effectiveLocations}
-                                    catalogPkgs={packages}
-                                    projectPkgs={effectivePackages || []}
-                                    hierarchyGroups={reportHierarchyDepth === -1 ? null : getGroupedByHierarchy(effectiveLocations, reportHierarchyDepth, packages, effectivePackages || [])}
-                                />
-                            </div>
-                        )}
+                        <div style={{ marginTop: '24px' }}>
+                            <LaborByPhaseReport
+                                locations={effectiveLocations}
+                                catalogPkgs={packages}
+                                projectPkgs={effectivePackages || []}
+                                hierarchyGroups={reportHierarchyDepth === -1 ? null : getGroupedByHierarchy(effectiveLocations, reportHierarchyDepth, packages, effectivePackages || [])}
+                                compactMode={compactMode}
+                            />
+                        </div>
                     </section>
                 )}
             </main>
@@ -2767,7 +3072,8 @@ export default function App() {
             {showAddSublocation && selected && <AddLocationModal parent={selected} isTopLevel={false} onClose={() => setShowAddSublocation(false)} onAdd={addLocations} />}
             {showDuplicate && (duplicateTarget || selected) && <DuplicateModal location={duplicateTarget || selected} onClose={() => { setShowDuplicate(false); setDuplicateTarget(null); }} onDuplicate={duplicateStructure} />}
             {showDelete && deleteTargets.length > 0 && <DeleteConfirmModal locations={deleteTargets} onClose={() => { setShowDelete(false); setDeleteTargets([]); setMultiSelectLocations([]); }} onDelete={deleteLocation} catalogPkgs={packages} projectPkgs={project.packages} />}
-            
+            {moveModalLocations && <MoveLocationModal locations={effectiveLocations} movingLocations={moveModalLocations} onMove={moveLocationTo} onClose={() => setMoveModalLocations(null)} />}
+
             {/* Revision Prompt Modal */}
             {showRevisionPrompt && (
                 <RevisionPromptModal

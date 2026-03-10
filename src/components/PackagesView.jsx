@@ -1,12 +1,13 @@
 import React from 'react';
-const { useState } = React;
+const { useState, useEffect } = React;
 import { styles } from '../styles';
 import { Icons } from '../icons';
 import { fmtCost } from '../utils/formatters';
 import useFlexibleColumns from '../hooks/useFlexibleColumns';
+import ColumnLayoutManager from './ColumnLayoutManager';
 import { generatePackageId, findAllPackageInstances } from '../utils/packages';
 
-export default function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackages, onUpdateProjectPackages, catalog, locations, onSyncInstances }) {
+export default function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackages, onUpdateProjectPackages, catalog, locations, compactMode, initialSelectedPkgId, onInitialPkgConsumed }) {
     const [selectedPkgId, setSelectedPkgId] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
     const [newName, setNewName] = useState('');
@@ -16,19 +17,35 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
     const [confirmDelete, setConfirmDelete] = useState(null);
     const [editingName, setEditingName] = useState(null);
     const [editNameValue, setEditNameValue] = useState('');
-    const [syncPrompt, setSyncPrompt] = useState(null); // { pkgId, pkgName, newVersion, instanceCount }
+    const [editingQpp, setEditingQpp] = useState({}); // { `${pkgId}-${idx}`: string }
+
+    // Select package when navigated from workspace context menu
+    useEffect(() => {
+        if (initialSelectedPkgId) {
+            setSelectedPkgId(initialSelectedPkgId);
+            if (onInitialPkgConsumed) onInitialPkgConsumed();
+        }
+    }, [initialSelectedPkgId]);
+
+    // Compact mode styles (matching LocationView)
+    const compactStyles = {
+        td: compactMode ? { padding: '4px 8px', fontSize: '11px' } : {},
+        th: compactMode ? { padding: '6px 8px', fontSize: '10px' } : {},
+        input: compactMode ? { padding: '2px 6px', fontSize: '11px' } : {},
+    };
 
     // Resizable columns for package detail table
     const PKG_COLUMNS = [
         { id: 'qtyPerPkg', label: 'Qty/Pkg', width: 80 },
         { id: 'manufacturer', label: 'Manufacturer', width: 150 },
         { id: 'model', label: 'Model', width: 180 },
+        { id: 'description', label: 'Description', width: 200 },
         { id: 'unitCost', label: 'Unit Cost', width: 100 },
         { id: 'labor', label: 'Labor', width: 80 },
         { id: 'ext', label: 'Ext.', width: 90 },
         { id: 'remove', label: '', width: 40, fixed: true },
     ];
-    const { columns: pkgCols, startResize: startPkgResize } = useFlexibleColumns(PKG_COLUMNS);
+    const { columns: pkgCols, startResize: startPkgResize, savedLayouts: pkgLayouts, saveLayout: savePkgLayout, loadLayout: loadPkgLayout, deleteLayout: deletePkgLayout, resetColumns: resetPkgColumns } = useFlexibleColumns(PKG_COLUMNS, 'packages');
 
     const allPackages = [...(catalogPackages || []), ...(projectPackages || [])];
     const selectedPkg = allPackages.find(p => p.id === selectedPkgId);
@@ -122,27 +139,9 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
         setEditNameValue(newPkg.name);
     };
 
-    const triggerSyncPrompt = (pkgId) => {
-        const pkg = [...(catalogPackages || []), ...(projectPackages || [])].find(p => p.id === pkgId);
-        if (!pkg) return;
-        const instances = findAllPackageInstances(locations || [], pkgId);
-        // Only show prompt if there are existing instances that would be affected
-        if (instances.length > 0) {
-            setSyncPrompt({ pkgId, pkgName: pkg.name, newVersion: (pkg.version || 1) + 1, instanceCount: instances.length });
-        }
-    };
-
-    const handleSyncAll = () => {
-        if (!syncPrompt || !onSyncInstances) return;
-        onSyncInstances(syncPrompt.pkgId, syncPrompt.newVersion);
-        setSyncPrompt(null);
-    };
-
     const removeComponent = (pkgId, itemIdx) => {
-        triggerSyncPrompt(pkgId);
         updatePackage(pkgId, p => ({
             ...p,
-            version: (p.version || 1) + 1,
             items: p.items.filter((_, i) => i !== itemIdx),
         }));
     };
@@ -170,10 +169,8 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
             qtyPerPackage: 1,
             qty: 1,
         };
-        triggerSyncPrompt(selectedPkgId);
         updatePackage(selectedPkgId, p => ({
             ...p,
-            version: (p.version || 1) + 1,
             items: [...(p.items || []), newItem],
         }));
         setShowAddComponent(false);
@@ -297,7 +294,6 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
                                     </h3>
                                     <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#8b98a5' }}>
                                         <span style={styles.badge(selectedScope === 'catalog' ? 'blue' : 'green')}>{selectedScope === 'catalog' ? 'Catalog' : 'Project'}</span>
-                                        <span>v{selectedPkg.version || 1}</span>
                                         <span>Used in {instanceCount} location{instanceCount !== 1 ? 's' : ''}</span>
                                     </div>
                                 </div>
@@ -320,6 +316,11 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
                                 <div><span style={{ color: '#8b98a5' }}>Labor: </span><strong>{pkgLabor.toFixed(1)} hrs</strong></div>
                             </div>
 
+                            {/* Column Layout Manager */}
+                            {(selectedPkg.items || []).length > 0 && (
+                                <ColumnLayoutManager layouts={pkgLayouts} onSave={savePkgLayout} onLoad={loadPkgLayout} onDelete={deletePkgLayout} onReset={resetPkgColumns} />
+                            )}
+
                             {/* Components table */}
                             {(selectedPkg.items || []).length > 0 && (
                                 <div style={{ overflowX: 'auto', marginBottom: '16px' }}>
@@ -327,7 +328,7 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
                                         <thead>
                                             <tr>
                                                 {pkgCols.map((col, colIndex) => (
-                                                    <th key={col.id} style={{ ...styles.th, width: col.width + 'px', position: 'relative' }}>
+                                                    <th key={col.id} style={{ ...styles.th, ...styles.thResizable, ...compactStyles.th, width: col.width + 'px' }}>
                                                         {col.label}
                                                         {!col.fixed && (
                                                             <div
@@ -345,16 +346,19 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
                                             {selectedPkg.items.map((item, i) => {
                                                 const qpp = item.qtyPerPackage || item.qty || 1;
                                                 const ext = qpp * (item.unitCost || 0);
+                                                const tdS = { ...styles.td, ...compactStyles.td };
+                                                const inpS = { ...styles.inputSmall, ...compactStyles.input, width: '100%', boxSizing: 'border-box' };
                                                 return (
                                                     <tr key={i}>
                                                         {pkgCols.map(col => {
-                                                            if (col.id === 'qtyPerPkg') return <td key={col.id} style={styles.td}><input type="number" min="1" value={qpp} onChange={e => updateComponentField(selectedPkg.id, i, 'qtyPerPackage', Math.max(1, parseInt(e.target.value) || 1))} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '100%', boxSizing: 'border-box' }} /></td>;
-                                                            if (col.id === 'manufacturer') return <td key={col.id} style={styles.td}>{item.manufacturer}</td>;
-                                                            if (col.id === 'model') return <td key={col.id} style={{ ...styles.td, fontWeight: '600' }}>{item.model}</td>;
-                                                            if (col.id === 'unitCost') return <td key={col.id} style={styles.td}><input type="number" min="0" step="0.01" value={item.unitCost || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'unitCost', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '100%', boxSizing: 'border-box' }} /></td>;
-                                                            if (col.id === 'labor') return <td key={col.id} style={styles.td}><input type="number" min="0" step="0.1" value={item.laborHrsPerUnit || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'laborHrsPerUnit', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={{ ...styles.inputSmall, width: '100%', boxSizing: 'border-box' }} /></td>;
-                                                            if (col.id === 'ext') return <td key={col.id} style={{ ...styles.td, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(ext)}</td>;
-                                                            if (col.id === 'remove') return <td key={col.id} style={styles.td}><button style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }} onClick={() => removeComponent(selectedPkg.id, i)} title="Remove component">×</button></td>;
+                                                            if (col.id === 'qtyPerPkg') { const eKey = `${selectedPkg.id}-${i}`; return <td key={col.id} style={tdS}><input type="text" inputMode="decimal" value={editingQpp[eKey] !== undefined ? editingQpp[eKey] : qpp} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) setEditingQpp(prev => ({ ...prev, [eKey]: e.target.value })); }} onFocus={e => { setEditingQpp(prev => ({ ...prev, [eKey]: String(qpp) })); e.target.select(); }} onBlur={() => { const raw = editingQpp[eKey]; setEditingQpp(prev => { const n = { ...prev }; delete n[eKey]; return n; }); if (raw !== undefined) updateComponentField(selectedPkg.id, i, 'qtyPerPackage', Math.max(0, parseFloat(raw) || 0)); }} style={inpS} /></td>; }
+                                                            if (col.id === 'manufacturer') return <td key={col.id} style={tdS}>{item.manufacturer}</td>;
+                                                            if (col.id === 'model') return <td key={col.id} style={{ ...tdS, fontWeight: '600' }}>{item.model}</td>;
+                                                            if (col.id === 'description') return <td key={col.id} style={{ ...tdS, fontSize: compactMode ? '11px' : '12px' }}>{item.description}</td>;
+                                                            if (col.id === 'unitCost') return <td key={col.id} style={tdS}><input type="number" min="0" step="0.01" value={item.unitCost || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'unitCost', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={inpS} /></td>;
+                                                            if (col.id === 'labor') return <td key={col.id} style={tdS}><input type="number" min="0" step="any" value={item.laborHrsPerUnit || 0} onChange={e => updateComponentField(selectedPkg.id, i, 'laborHrsPerUnit', parseFloat(e.target.value) || 0)} onFocus={e => e.target.select()} style={inpS} /></td>;
+                                                            if (col.id === 'ext') return <td key={col.id} style={{ ...tdS, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(ext)}</td>;
+                                                            if (col.id === 'remove') return <td key={col.id} style={tdS}><button style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }} onClick={() => removeComponent(selectedPkg.id, i)} title="Remove component">×</button></td>;
                                                             return null;
                                                         })}
                                                     </tr>
@@ -416,27 +420,6 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
                 </div>
             </div>
 
-            {/* Sync Prompt Modal */}
-            {syncPrompt && (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setSyncPrompt(null)}>
-                    <div style={{ ...styles.card, maxWidth: '440px', width: '90%', padding: '24px' }} onClick={e => e.stopPropagation()}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <Icons.Package /> Update Package Instances?
-                        </h3>
-                        <p style={{ margin: '0 0 16px 0', color: '#8b98a5', fontSize: '14px', lineHeight: '1.5' }}>
-                            You've modified <strong style={{ color: '#e7e9ea' }}>{syncPrompt.pkgName}</strong>.
-                            There {syncPrompt.instanceCount === 1 ? 'is' : 'are'} <strong style={{ color: '#e7e9ea' }}>{syncPrompt.instanceCount}</strong> instance{syncPrompt.instanceCount !== 1 ? 's' : ''} of this package across your project locations.
-                        </p>
-                        <p style={{ margin: '0 0 20px 0', color: '#8b98a5', fontSize: '13px' }}>
-                            Update all instances to use the new definition (v{syncPrompt.newVersion}), or skip to leave them on the previous version.
-                        </p>
-                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                            <button style={styles.button('secondary')} onClick={() => setSyncPrompt(null)}>Skip</button>
-                            <button style={styles.button('primary')} onClick={handleSyncAll}>Update All Instances</button>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

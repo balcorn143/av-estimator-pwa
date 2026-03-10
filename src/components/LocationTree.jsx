@@ -7,7 +7,7 @@ import { formatHours } from '../utils/formatters'
 import { calculateTotals } from '../utils/catalog'
 import { filterLocations } from '../utils/locations'
 
-export default function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onDuplicate, onMoveUp, onMoveDown, onPromote, onDemote, multiSelect, onMultiSelectToggle, depth = 0, searchTerm, expandedState, onToggleExpand, catalogPkgs, projectPkgs }) {
+export default function LocationTree({ locations, selectedId, onSelect, onDelete, onRename, onDuplicate, onMoveUp, onMoveDown, onPromote, onDemote, onMoveTo, multiSelect, onMultiSelectToggle, depth = 0, searchTerm, expandedState, onToggleExpand, catalogPkgs, projectPkgs }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [hoveredId, setHoveredId] = useState(null);
     const [editingId, setEditingId] = useState(null);
@@ -25,12 +25,18 @@ export default function LocationTree({ locations, selectedId, onSelect, onDelete
 
     const handleContextMenu = (e, loc) => {
         e.preventDefault();
-        setContextMenu({ x: e.clientX, y: e.clientY, location: loc });
+        const menuHeight = 320; // approximate height of the context menu
+        const menuWidth = 170;
+        const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
+        const y = e.clientY + menuHeight > window.innerHeight
+            ? Math.max(8, e.clientY - menuHeight)
+            : e.clientY;
+        setContextMenu({ x, y, location: loc });
     };
 
     const handleClick = (loc, e) => {
         if (e.shiftKey || e.ctrlKey || e.metaKey) {
-            // Shift/Ctrl+click toggles multi-select (event passed for shift-range)
+            e.preventDefault(); // Prevent browser text selection on shift-click
             onMultiSelectToggle(loc, e);
         } else {
             onSelect(loc);
@@ -78,7 +84,8 @@ export default function LocationTree({ locations, selectedId, onSelect, onDelete
                             ...styles.treeItem(depth, highlighted),
                             backgroundColor: isMultiSelected ? '#3d1a1a' : sel ? '#1d3a5c' : nameMatch ? '#2d2a1a' : 'transparent',
                             borderColor: isMultiSelected ? '#f87171' : sel ? '#1d9bf0' : 'transparent',
-                            position: 'relative'
+                            position: 'relative',
+                            userSelect: 'none',
                         }}
                             onClick={e => !isEditing && handleClick(loc, e)}
                             onContextMenu={e => handleContextMenu(e, loc)}
@@ -102,7 +109,7 @@ export default function LocationTree({ locations, selectedId, onSelect, onDelete
                                 />
                             ) : (
                                 <span
-                                    style={{ fontWeight: highlighted ? '600' : '400', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: isHovered ? '100px' : '120px' }}
+                                    style={{ fontWeight: highlighted ? '600' : '400', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}
                                     onDoubleClick={e => { e.stopPropagation(); startRename(loc); }}
                                 >
                                     {loc.name}
@@ -123,7 +130,7 @@ export default function LocationTree({ locations, selectedId, onSelect, onDelete
                                 </button>
                             )}
                         </div>
-                        {has && exp && <LocationTree locations={loc.children} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onRename={onRename} onDuplicate={onDuplicate} onMoveUp={onMoveUp} onMoveDown={onMoveDown} onPromote={onPromote} onDemote={onDemote} multiSelect={multiSelect} onMultiSelectToggle={onMultiSelectToggle} depth={depth + 1} searchTerm={searchTerm} expandedState={expandedState} onToggleExpand={onToggleExpand} catalogPkgs={catalogPkgs} projectPkgs={projectPkgs} />}
+                        {has && exp && <LocationTree locations={loc.children} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onRename={onRename} onDuplicate={onDuplicate} onMoveUp={onMoveUp} onMoveDown={onMoveDown} onPromote={onPromote} onDemote={onDemote} onMoveTo={onMoveTo} multiSelect={multiSelect} onMultiSelectToggle={onMultiSelectToggle} depth={depth + 1} searchTerm={searchTerm} expandedState={expandedState} onToggleExpand={onToggleExpand} catalogPkgs={catalogPkgs} projectPkgs={projectPkgs} />}
                     </div>
                 );
             })}
@@ -229,34 +236,15 @@ export default function LocationTree({ locations, selectedId, onSelect, onDelete
                             padding: '6px 12px',
                             border: 'none',
                             backgroundColor: 'transparent',
-                            color: '#8b98a5',
+                            color: '#1d9bf0',
                             cursor: 'pointer',
                             borderRadius: '4px',
                             fontSize: '12px'
                         }}
-                        onClick={() => { onPromote(contextMenu.location.id); setContextMenu(null); }}
-                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                        onClick={() => { onMoveTo(contextMenu.location); setContextMenu(null); }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1a2a3d'}
                         onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}>
-                        <Icons.ChevronsUp /> Promote (Level)
-                    </button>
-                    <button
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            width: '100%',
-                            padding: '6px 12px',
-                            border: 'none',
-                            backgroundColor: 'transparent',
-                            color: '#8b98a5',
-                            cursor: 'pointer',
-                            borderRadius: '4px',
-                            fontSize: '12px'
-                        }}
-                        onClick={() => { onDemote(contextMenu.location.id); setContextMenu(null); }}
-                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
-                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}>
-                        <Icons.ChevronsDown /> Demote (Level)
+                        <Icons.Location /> Move to...
                     </button>
                     <div style={{ borderTop: '1px solid #2f3336', margin: '4px 0' }} />
                     <button

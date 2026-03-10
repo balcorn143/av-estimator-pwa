@@ -34,12 +34,48 @@ export default function AllLocationsView({
     filterMode, // 'unfinished' to show only placeholder items
     onReplaceItem,
     onReplacePackage,
-    searchFilter
+    searchFilter,
+    onEditPackage
 }) {
     const [selectedItems, setSelectedItems] = useState({}); // { locationId: [indices] }
     const [expandedItems, setExpandedItems] = useState({}); // { locationId: { itemIdx: bool } }
     const [expandedPackages, setExpandedPackages] = useState({}); // { locationId: { pkgName: bool } }
     const [contextMenu, setContextMenu] = useState(null);
+    const [sortField, setSortField] = useState(null);
+    const [sortDir, setSortDir] = useState('asc');
+    const [systemFilter, setSystemFilter] = useState('');
+
+    const handleSort = (field) => {
+        if (sortField === field) {
+            setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        } else {
+            setSortField(field);
+            setSortDir('asc');
+        }
+    };
+
+    const SortIcon = ({ field }) => {
+        if (sortField !== field) return null;
+        return sortDir === 'asc' ? <Icons.ChevronUp /> : <Icons.ChevronDown />;
+    };
+
+    const sortItems = (items) => {
+        if (!sortField) return items;
+        return [...items].sort((a, b) => {
+            let aVal = a[sortField];
+            let bVal = b[sortField];
+            if (sortField === 'extCost') { aVal = (a.qty || 0) * (a.unitCost || 0); bVal = (b.qty || 0) * (b.unitCost || 0); }
+            if (sortField === 'extLabor') { aVal = (a.qty || 0) * (a.laborHrsPerUnit || 0); bVal = (b.qty || 0) * (b.laborHrsPerUnit || 0); }
+            if (sortField === 'unitLabor') { aVal = a.laborHrsPerUnit; bVal = b.laborHrsPerUnit; }
+            if (aVal == null) aVal = '';
+            if (bVal == null) bVal = '';
+            if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+            if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+            if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+            if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+            return 0;
+        });
+    };
 
     // Resizable columns
     const ALL_LOC_COLUMNS = [
@@ -141,18 +177,33 @@ export default function AllLocationsView({
         return { packages: packageInstances, legacyPackages: legacyPkgList, standalone };
     };
 
+    // Qty editing state
+    const [editingQty, setEditingQty] = useState({});
+    const [editingAccQty, setEditingAccQty] = useState({});
+    const [editingPkgQty, setEditingPkgQty] = useState({});
+    const [editingPkgItemQty, setEditingPkgItemQty] = useState({});
+
     // Change handlers
     const changeQty = (locationId, itemIdx, q) => {
+        setEditingQty(prev => ({ ...prev, [`${locationId}-${itemIdx}`]: q }));
+    };
+    const focusQty = (locationId, itemIdx, currentVal) => {
+        setEditingQty(prev => ({ ...prev, [`${locationId}-${itemIdx}`]: String(currentVal ?? 0) }));
+    };
+    const blurQty = (locationId, itemIdx) => {
+        const key = `${locationId}-${itemIdx}`;
+        const raw = editingQty[key];
+        setEditingQty(prev => { const n = { ...prev }; delete n[key]; return n; });
         onUpdate(locationId, (items) => {
             const newItems = [...items];
-            const newQty = Math.max(0, parseInt(q) || 0);
+            const newQty = Math.max(0, parseFloat(raw) || 0);
             const oldQty = newItems[itemIdx].qty || 1;
             newItems[itemIdx] = { ...newItems[itemIdx], qty: newQty };
             if (newItems[itemIdx].accessories) {
                 const ratio = newQty / oldQty;
                 newItems[itemIdx].accessories = newItems[itemIdx].accessories.map(acc => ({
                     ...acc,
-                    qty: Math.round((acc.qty || 0) * ratio) || acc.qtyPer || 1
+                    qty: parseFloat(((acc.qty || 0) * ratio).toFixed(4)) || acc.qtyPer || 1
                 }));
             }
             return newItems;
@@ -216,11 +267,20 @@ export default function AllLocationsView({
     };
 
     const changeAccessoryQty = (locationId, itemIdx, accIdx, q) => {
+        setEditingAccQty(prev => ({ ...prev, [`${locationId}-${itemIdx}-${accIdx}`]: q }));
+    };
+    const focusAccQty = (locationId, itemIdx, accIdx, currentVal) => {
+        setEditingAccQty(prev => ({ ...prev, [`${locationId}-${itemIdx}-${accIdx}`]: String(currentVal ?? 0) }));
+    };
+    const blurAccQty = (locationId, itemIdx, accIdx) => {
+        const key = `${locationId}-${itemIdx}-${accIdx}`;
+        const raw = editingAccQty[key];
+        setEditingAccQty(prev => { const n = { ...prev }; delete n[key]; return n; });
         onUpdate(locationId, (items) => {
             const newItems = [...items];
             newItems[itemIdx] = {
                 ...newItems[itemIdx],
-                accessories: newItems[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, qty: Math.max(0, parseInt(q) || 0) } : a)
+                accessories: newItems[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, qty: Math.max(0, parseFloat(raw) || 0) } : a)
             };
             return newItems;
         });
@@ -356,18 +416,17 @@ export default function AllLocationsView({
 
     // Selection handlers
     const lastClickedRef = useRef({ locationId: null, idx: null });
-    const toggleSelect = (locationId, idx, e) => {
-        if (e && e.shiftKey && lastClickedRef.current.locationId === locationId && lastClickedRef.current.idx !== null) {
-            // Shift+Click: select range within same location
-            const start = Math.min(lastClickedRef.current.idx, idx);
-            const end = Math.max(lastClickedRef.current.idx, idx);
-            const range = [];
-            for (let i = start; i <= end; i++) range.push(i);
-            setSelectedItems(prev => {
-                const current = prev[locationId] || [];
-                const combined = new Set([...current, ...range]);
-                return { ...prev, [locationId]: [...combined] };
-            });
+    const toggleSelect = (locationId, idx, e, visibleIndicesForLoc) => {
+        if (e && e.shiftKey && lastClickedRef.current.locationId === locationId && lastClickedRef.current.idx !== null && visibleIndicesForLoc) {
+            // Shift+Click: select range from anchor (don't move anchor)
+            const lastPos = visibleIndicesForLoc.indexOf(lastClickedRef.current.idx);
+            const curPos = visibleIndicesForLoc.indexOf(idx);
+            if (lastPos !== -1 && curPos !== -1) {
+                const start = Math.min(lastPos, curPos);
+                const end = Math.max(lastPos, curPos);
+                const range = visibleIndicesForLoc.slice(start, end + 1);
+                setSelectedItems(prev => ({ ...prev, [locationId]: range }));
+            }
         } else {
             setSelectedItems(prev => {
                 const current = prev[locationId] || [];
@@ -376,8 +435,8 @@ export default function AllLocationsView({
                     [locationId]: current.includes(idx) ? current.filter(i => i !== idx) : [...current, idx]
                 };
             });
+            lastClickedRef.current = { locationId, idx };
         }
-        lastClickedRef.current = { locationId, idx };
     };
 
     const selectAllInLocation = (locationId, visibleIndices) => {
@@ -431,9 +490,9 @@ export default function AllLocationsView({
     };
 
     // Context menu
-    const handleContextMenu = (e, locationId, itemIdx, isAccessory = false, accIdx = null) => {
+    const handleContextMenu = (e, locationId, itemIdx, isAccessory = false, accIdx = null, isPackage = false, packageName = null) => {
         e.preventDefault();
-        setContextMenu({ x: e.clientX, y: e.clientY, locationId, itemIdx, isAccessory, accIdx });
+        setContextMenu({ x: e.clientX, y: e.clientY, locationId, itemIdx, isAccessory, accIdx, isPackage, packageName });
     };
 
     // Close context menu on click outside
@@ -477,6 +536,10 @@ export default function AllLocationsView({
                     <button style={styles.smallButton} onClick={onCollapseAllLocations} title="Collapse all locations">
                         <Icons.ChevronsUp /> Collapse All
                     </button>
+                    <select value={systemFilter} onChange={e => setSystemFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
+                        <option value="">All Systems</option>
+                        {SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
                 </div>
             </div>
 
@@ -501,10 +564,24 @@ export default function AllLocationsView({
                 const filteredStandalone = searchFilter
                     ? groupedItems.standalone.filter(({ item }) => itemMatchesSearch(item, searchFilter))
                     : groupedItems.standalone;
-                // Apply unfinished filter on top of search filter
-                const visibleStandalone = filterMode === 'unfinished'
+                // Apply unfinished filter and system filter on top of search filter
+                let visibleStandalone = filterMode === 'unfinished'
                     ? filteredStandalone.filter(({ item }) => item.isPlaceholder)
                     : filteredStandalone;
+                if (systemFilter) visibleStandalone = visibleStandalone.filter(({ item }) => (item.system || '') === systemFilter);
+                visibleStandalone = sortField ? [...visibleStandalone].sort((a, b) => {
+                    const itemA = a.item, itemB = b.item;
+                    let aVal = itemA[sortField], bVal = itemB[sortField];
+                    if (sortField === 'extCost') { aVal = (itemA.qty || 0) * (itemA.unitCost || 0); bVal = (itemB.qty || 0) * (itemB.unitCost || 0); }
+                    if (sortField === 'extLabor') { aVal = (itemA.qty || 0) * (itemA.laborHrsPerUnit || 0); bVal = (itemB.qty || 0) * (itemB.laborHrsPerUnit || 0); }
+                    if (sortField === 'unitLabor') { aVal = itemA.laborHrsPerUnit; bVal = itemB.laborHrsPerUnit; }
+                    if (aVal == null) aVal = ''; if (bVal == null) bVal = '';
+                    if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+                    if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+                    if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+                    if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+                    return 0;
+                }) : visibleStandalone;
                 const visiblePkgs = filterMode === 'unfinished' ? [] : filteredPkgs;
                 const visibleLegacyPkgs = filterMode === 'unfinished' ? [] : filteredLegacyPkgs;
                 // Compute visible indices for select-all
@@ -585,18 +662,18 @@ export default function AllLocationsView({
                                         <thead>
                                             <tr>
                                                 {allLocCols.map((col, colIndex) => (
-                                                    <th key={col.id} style={{ ...thStyle, ...styles.thResizable, width: col.width + 'px' }}>
+                                                    <th key={col.id} style={{ ...thStyle, ...styles.thResizable, width: col.width + 'px', cursor: col.fixed ? 'default' : 'pointer' }} onClick={() => { if (!col.fixed) handleSort(col.id); }}>
                                                         {col.id === 'checkbox' ? (
                                                             <input
                                                                 type="checkbox"
                                                                 checked={visibleIndices.length > 0 && visibleIndices.every(i => locationSelected.includes(i))}
                                                                 onChange={() => selectAllInLocation(location.id, visibleIndices)}
                                                             />
-                                                        ) : col.label}
+                                                        ) : <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>{col.label}{!col.fixed && <SortIcon field={col.id} />}</span>}
                                                         {!col.fixed && (
                                                             <div
                                                                 style={styles.resizeHandle}
-                                                                onMouseDown={e => startAllLocResize(colIndex, e)}
+                                                                onMouseDown={e => { e.stopPropagation(); startAllLocResize(colIndex, e); }}
                                                                 onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
                                                                 onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
                                                             />
@@ -613,22 +690,54 @@ export default function AllLocationsView({
                                                 const isSelected = locationSelected.includes(pkg.idx);
 
                                                 const changePkgQty = (val) => {
+                                                    setEditingPkgQty(prev => ({ ...prev, [`${location.id}-${pkg.idx}`]: val }));
+                                                };
+                                                const focusPkgQty = () => {
+                                                    setEditingPkgQty(prev => ({ ...prev, [`${location.id}-${pkg.idx}`]: String(pkg.qty ?? 1) }));
+                                                };
+                                                const blurPkgQty = () => {
+                                                    const pkgKey = `${location.id}-${pkg.idx}`;
+                                                    const raw = editingPkgQty[pkgKey];
+                                                    setEditingPkgQty(prev => { const n = { ...prev }; delete n[pkgKey]; return n; });
                                                     onUpdate(location.id, items => {
                                                         const newItems = [...items];
-                                                        newItems[pkg.idx] = { ...newItems[pkg.idx], qty: Math.max(1, parseInt(val) || 1) };
+                                                        newItems[pkg.idx] = { ...newItems[pkg.idx], qty: Math.max(0.01, parseFloat(raw) || 1) };
+                                                        return newItems;
+                                                    });
+                                                };
+
+                                                // Per-instance item qty override
+                                                const changePkgItemQty = (pkgItemIdx, val) => {
+                                                    setEditingPkgItemQty(prev => ({ ...prev, [`${location.id}-${pkg.idx}-${pkgItemIdx}`]: val }));
+                                                };
+                                                const focusPkgItemQty = (pkgItemIdx, currentVal) => {
+                                                    setEditingPkgItemQty(prev => ({ ...prev, [`${location.id}-${pkg.idx}-${pkgItemIdx}`]: String(currentVal ?? 0) }));
+                                                };
+                                                const blurPkgItemQty = (pkgItemIdx) => {
+                                                    const key = `${location.id}-${pkg.idx}-${pkgItemIdx}`;
+                                                    const raw = editingPkgItemQty[key];
+                                                    setEditingPkgItemQty(prev => { const n = { ...prev }; delete n[key]; return n; });
+                                                    const newTotalQty = Math.max(0, parseFloat(raw) || 0);
+                                                    const perPkg = pkg.qty ? newTotalQty / pkg.qty : newTotalQty;
+                                                    onUpdate(location.id, items => {
+                                                        const newItems = [...items];
+                                                        const instance = newItems[pkg.idx];
+                                                        const overrides = { ...(instance.itemOverrides || {}) };
+                                                        overrides[pkgItemIdx] = { ...(overrides[pkgItemIdx] || {}), qtyPerPackage: perPkg };
+                                                        newItems[pkg.idx] = { ...instance, itemOverrides: overrides };
                                                         return newItems;
                                                     });
                                                 };
 
                                                 return (
                                                     <React.Fragment key={`pkg-${pkg.idx}`}>
-                                                        <tr style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}` }}>
-                                                            <td style={tdStyle}><input type="checkbox" checked={isSelected} onChange={e => toggleSelect(location.id, pkg.idx, e)} /></td>
+                                                        <tr style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}`, cursor: 'context-menu' }} onContextMenu={e => handleContextMenu(e, location.id, pkg.idx, false, null, true, pkg.name)}>
+                                                            <td style={tdStyle}><input type="checkbox" checked={isSelected} onChange={e => toggleSelect(location.id, pkg.idx, e, visibleIndices)} /></td>
                                                             <td style={tdStyle}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>
-                                                            <td style={tdStyle}><input type="number" value={pkg.qty} onChange={e => changePkgQty(e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px', fontWeight: '700' }} min="1" /></td>
+                                                            <td style={tdStyle}><input type="text" inputMode="decimal" value={editingPkgQty[`${location.id}-${pkg.idx}`] !== undefined ? editingPkgQty[`${location.id}-${pkg.idx}`] : pkg.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changePkgQty(e.target.value); }} onBlur={blurPkgQty} onFocus={e => { focusPkgQty(); e.target.select(); }} style={{ ...inputStyle, width: '60px', fontWeight: '700' }} /></td>
                                                             <td style={tdStyle}></td>
-                                                            <td style={tdStyle}></td>
-                                                            <td style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> {pkg.isOutOfDate && <span style={{ color: '#f59e0b', fontSize: '11px' }}>&#x26A0;</span>}</td>
+                                                            <td style={tdStyle}><select value={location.items[pkg.idx].system || ''} onChange={e => { onUpdate(location.id, items => { const newItems = [...items]; newItems[pkg.idx] = { ...newItems[pkg.idx], system: e.target.value }; return newItems; }); }} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">&#x2014;</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>
+                                                            <td style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span></td>
                                                             <td style={tdStyle}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items &times; {pkg.qty}</span></td>
                                                             <td style={tdStyle}>{pkg.instance.notes || ''}</td>
                                                             <td style={tdStyle}></td>
@@ -636,16 +745,26 @@ export default function AllLocationsView({
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
                                                             <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
                                                         </tr>
-                                                        {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
+                                                        {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => {
+                                                            const piKey = `${location.id}-${pkg.idx}-${itemIdx}`;
+                                                            return (
                                                             <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
                                                                 onMouseEnter={e => e.currentTarget.style.backgroundColor = '#182430'}
                                                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={tdStyle}></td>
-                                                                <td style={{ ...tdStyle, color: '#8b98a5', fontSize: '12px' }}>{fmtQty(item.qty)}</td>
-                                                                <td style={{ ...tdStyle, fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}&times;{pkg.qty}</td>
-                                                                <td style={tdStyle}></td>
-                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>&boxur; {item.manufacturer}</td>
+                                                                <td style={tdStyle}>
+                                                                    <input type="text" inputMode="decimal"
+                                                                        value={editingPkgItemQty[piKey] !== undefined ? editingPkgItemQty[piKey] : item.qty}
+                                                                        onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changePkgItemQty(itemIdx, e.target.value); }}
+                                                                        onBlur={() => blurPkgItemQty(itemIdx)}
+                                                                        onFocus={e => { focusPkgItemQty(itemIdx, item.qty); e.target.select(); }}
+                                                                        style={{ ...inputStyle, width: '60px', color: item._hasOverride ? '#f59e0b' : '#8b98a5' }}
+                                                                    />
+                                                                </td>
+                                                                <td style={{ ...tdStyle, fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}&times;{pkg.qty}{item._hasOverride ? ' (edited)' : ''}</td>
+                                                                <td style={tdStyle}><select value={item.system || ''} onChange={e => { const val = e.target.value; onUpdate(location.id, items => { const newItems = [...items]; const instance = newItems[pkg.idx]; const overrides = { ...(instance.itemOverrides || {}) }; const defaultSys = instance.system || ''; if (val === defaultSys) { if (overrides[itemIdx]) { const o = { ...overrides[itemIdx] }; delete o.system; overrides[itemIdx] = Object.keys(o).length ? o : undefined; if (!overrides[itemIdx]) delete overrides[itemIdx]; } } else { overrides[itemIdx] = { ...(overrides[itemIdx] || {}), system: val }; } newItems[pkg.idx] = { ...instance, itemOverrides: overrides }; return newItems; }); }} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px', color: item._hasSystemOverride ? '#f59e0b' : '#8b98a5' }}><option value="">&#x2014;</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, color: '#1d9bf0', fontSize: '12px' }}>{item.model}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.description}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtCost(item.unitCost || 0)}</td>
@@ -653,7 +772,8 @@ export default function AllLocationsView({
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#00ba7c' }}>{fmtCost((item.qty || 0) * (item.unitCost || 0))}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtHrs((item.qty || 0) * (item.laborHrsPerUnit || 0))}</td>
                                                             </tr>
-                                                        ))}
+                                                            );
+                                                        })}
                                                     </React.Fragment>
                                                 );
                                             })}
@@ -683,16 +803,16 @@ export default function AllLocationsView({
                                                             const itemTotal = calculateItemTotal(item);
                                                             return (
                                                                 <tr key={`legacy-item-${i}`} style={{ backgroundColor: isItemSelected ? '#1d3a5c' : '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }} onContextMenu={e => handleContextMenu(e, location.id, i)}>
-                                                                    <td style={{ ...tdStyle, paddingLeft: '24px' }}><input type="checkbox" checked={isItemSelected} onChange={e => toggleSelect(location.id, i, e)} /></td>
+                                                                    <td style={{ ...tdStyle, paddingLeft: '24px' }}><input type="checkbox" checked={isItemSelected} onChange={e => toggleSelect(location.id, i, e, visibleIndices)} /></td>
                                                                     <td style={tdStyle}></td>
-                                                                    <td style={tdStyle}><input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px' }} min="0" /></td>
+                                                                    <td style={tdStyle}><input type="text" inputMode="decimal" value={editingQty[`${location.id}-${i}`] !== undefined ? editingQty[`${location.id}-${i}`] : item.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeQty(location.id, i, e.target.value); }} onBlur={() => blurQty(location.id, i)} onFocus={e => { focusQty(location.id, i, item.qty); e.target.select(); }} style={{ ...inputStyle, width: '60px' }} /></td>
                                                                     <td style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} /></td>
                                                                     <td style={tdStyle}><select value={item.system || ''} onChange={e => changeSystem(location.id, i, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">&#x2014;</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>
-                                                                    <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>&boxur; {item.manufacturer}</td>
+                                                                    <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.manufacturer}</td>
                                                                     <td style={tdStyle}><strong>{item.model}</strong></td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px' }}>{item.description}</td>
-                                                                    <td style={tdStyle}><input type="number" step="0.01" min="0" value={editingCost[`${location.id}-${i}`] !== undefined ? editingCost[`${location.id}-${i}`] : (item.unitCost || 0)} onChange={e => changeUnitCost(location.id, i, e.target.value)} onBlur={() => blurUnitCost(location.id, i)} onFocus={e => { focusUnitCost(location.id, i, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right' }} /></td>
-                                                                    <td style={tdStyle}><input type="number" step="0.25" min="0" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => changeUnitLabor(location.id, i, e.target.value)} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
+                                                                    <td style={tdStyle}><input type="text" inputMode="decimal" value={editingCost[`${location.id}-${i}`] !== undefined ? editingCost[`${location.id}-${i}`] : (item.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitCost(location.id, i, e.target.value); }} onBlur={() => blurUnitCost(location.id, i)} onFocus={e => { focusUnitCost(location.id, i, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right' }} /></td>
+                                                                    <td style={tdStyle}><input type="text" inputMode="decimal" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitLabor(location.id, i, e.target.value); }} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
                                                                     <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
                                                                 </tr>
@@ -718,7 +838,7 @@ export default function AllLocationsView({
                                                             onMouseLeave={e => { if (!isSelected && !item.isPlaceholder) e.currentTarget.style.backgroundColor = 'transparent'; }}
                                                         >
                                                             <td style={tdStyle}>
-                                                                <input type="checkbox" checked={isSelected} onChange={e => toggleSelect(location.id, i, e)} />
+                                                                <input type="checkbox" checked={isSelected} onChange={e => toggleSelect(location.id, i, e, visibleIndices)} />
                                                             </td>
                                                             <td style={tdStyle}>
                                                                 {hasAccessories && (
@@ -728,7 +848,7 @@ export default function AllLocationsView({
                                                                 )}
                                                             </td>
                                                             <td style={tdStyle}>
-                                                                <input type="number" value={item.qty} onChange={e => changeQty(location.id, i, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px' }} min="0" />
+                                                                <input type="text" inputMode="decimal" value={editingQty[`${location.id}-${i}`] !== undefined ? editingQty[`${location.id}-${i}`] : item.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeQty(location.id, i, e.target.value); }} onBlur={() => blurQty(location.id, i)} onFocus={e => { focusQty(location.id, i, item.qty); e.target.select(); }} style={{ ...inputStyle, width: '60px' }} />
                                                             </td>
                                                             <td style={tdStyle}>
                                                                 <input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} />
@@ -746,8 +866,8 @@ export default function AllLocationsView({
                                                                 {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.description || ''} onChange={e => changeDescription(location.id, i, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: '12px' }} /> : item.description}
                                                                 {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
                                                             </td>
-                                                            <td style={tdStyle}><input type="number" step="0.01" min="0" value={editingCost[`${location.id}-${i}`] !== undefined ? editingCost[`${location.id}-${i}`] : (item.unitCost || 0)} onChange={e => changeUnitCost(location.id, i, e.target.value)} onBlur={() => blurUnitCost(location.id, i)} onFocus={e => { focusUnitCost(location.id, i, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right' }} /></td>
-                                                            <td style={tdStyle}><input type="number" step="0.25" min="0" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => changeUnitLabor(location.id, i, e.target.value)} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
+                                                            <td style={tdStyle}><input type="text" inputMode="decimal" value={editingCost[`${location.id}-${i}`] !== undefined ? editingCost[`${location.id}-${i}`] : (item.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitCost(location.id, i, e.target.value); }} onBlur={() => blurUnitCost(location.id, i)} onFocus={e => { focusUnitCost(location.id, i, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right' }} /></td>
+                                                            <td style={tdStyle}><input type="text" inputMode="decimal" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitLabor(location.id, i, e.target.value); }} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
                                                             <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
                                                         </tr>
@@ -764,7 +884,7 @@ export default function AllLocationsView({
                                                                 <td style={tdStyle}></td>
                                                                 <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, paddingLeft: '24px' }}>
-                                                                    <input type="number" value={acc.qty} onChange={e => changeAccessoryQty(location.id, i, accIdx, e.target.value)} onFocus={e => e.target.select()} style={{ ...inputStyle, width: '60px' }} min="0" />
+                                                                    <input type="text" inputMode="decimal" value={editingAccQty[`${location.id}-${i}-${accIdx}`] !== undefined ? editingAccQty[`${location.id}-${i}-${accIdx}`] : acc.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccessoryQty(location.id, i, accIdx, e.target.value); }} onBlur={() => blurAccQty(location.id, i, accIdx)} onFocus={e => { focusAccQty(location.id, i, accIdx, acc.qty); e.target.select(); }} style={{ ...inputStyle, width: '60px' }} />
                                                                 </td>
                                                                 <td style={tdStyle}>
                                                                     <input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(location.id, i, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '10px' }} />
@@ -773,8 +893,8 @@ export default function AllLocationsView({
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>&boxuR; {acc.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.model}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.description}</td>
-                                                                <td style={tdStyle}><input type="number" step="0.01" min="0" value={editingAccCost[accCostKey] !== undefined ? editingAccCost[accCostKey] : (acc.unitCost || 0)} onChange={e => changeAccCost(location.id, i, accIdx, e.target.value)} onBlur={() => blurAccCost(location.id, i, accIdx)} onFocus={e => { focusAccCost(location.id, i, accIdx, acc.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right', fontSize: '10px' }} /></td>
-                                                                <td style={tdStyle}><input type="number" step="0.25" min="0" value={editingAccLabor[accLaborKey] !== undefined ? editingAccLabor[accLaborKey] : (acc.laborHrsPerUnit || 0)} onChange={e => changeAccLabor(location.id, i, accIdx, e.target.value)} onBlur={() => blurAccLabor(location.id, i, accIdx)} onFocus={e => { focusAccLabor(location.id, i, accIdx, acc.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right', fontSize: '10px' }} /></td>
+                                                                <td style={tdStyle}><input type="text" inputMode="decimal" value={editingAccCost[accCostKey] !== undefined ? editingAccCost[accCostKey] : (acc.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccCost(location.id, i, accIdx, e.target.value); }} onBlur={() => blurAccCost(location.id, i, accIdx)} onFocus={e => { focusAccCost(location.id, i, accIdx, acc.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right', fontSize: '10px' }} /></td>
+                                                                <td style={tdStyle}><input type="text" inputMode="decimal" value={editingAccLabor[accLaborKey] !== undefined ? editingAccLabor[accLaborKey] : (acc.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccLabor(location.id, i, accIdx, e.target.value); }} onBlur={() => blurAccLabor(location.id, i, accIdx)} onFocus={e => { focusAccLabor(location.id, i, accIdx, acc.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right', fontSize: '10px' }} /></td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#6e9e6e' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px' }}>
                                                                     <span style={{ color: '#8b98a5' }}>{fmtHrs((acc.qty || 0) * (acc.laborHrsPerUnit || 0))}</span>
@@ -797,8 +917,72 @@ export default function AllLocationsView({
                 );
             })}
 
+            {/* Package Context Menu */}
+            {contextMenu && contextMenu.isPackage && (
+                <div style={{
+                    position: 'fixed',
+                    top: contextMenu.y,
+                    left: contextMenu.x,
+                    backgroundColor: '#21262d',
+                    border: '1px solid #30363d',
+                    borderRadius: '8px',
+                    padding: '4px',
+                    zIndex: 1000,
+                    minWidth: '200px',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+                }}>
+                    {(() => {
+                        const location = allLocations.find(l => l.id === contextMenu.locationId);
+                        const pkgItem = location?.items[contextMenu.itemIdx];
+                        const packageId = pkgItem?.packageId;
+                        return packageId ? (
+                            <>
+                                <button
+                                    style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                    onClick={() => { setExpandedPackages(prev => ({ ...prev, [contextMenu.locationId]: { ...(prev[contextMenu.locationId] || {}), [contextMenu.packageName]: true } })); setContextMenu(null); }}>
+                                    <Icons.Edit /> Edit This Instance
+                                </button>
+                                {onEditPackage && <button
+                                    style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                    onClick={() => { onEditPackage(packageId); setContextMenu(null); }}>
+                                    <Icons.Package /> Edit All Copies
+                                </button>}
+                                <div style={{ borderTop: '1px solid #30363d', margin: '4px 0' }} />
+                            </>
+                        ) : null;
+                    })()}
+                    {onReplacePackage && (
+                        <button
+                            style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                            onClick={() => { onReplacePackage(contextMenu.packageName, contextMenu.itemIdx, contextMenu.locationId); setContextMenu(null); }}>
+                            <Icons.Sync /> Replace Package
+                        </button>
+                    )}
+                    <button
+                        style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px' }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                        onClick={() => { onUngroupPackage(contextMenu.packageName, contextMenu.locationId); setContextMenu(null); }}>
+                        <Icons.Layers /> Ungroup Package
+                    </button>
+                    <button
+                        style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#f85149' }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                        onClick={() => { removeItem(contextMenu.locationId, contextMenu.itemIdx); setContextMenu(null); }}>
+                        <Icons.Trash /> Delete Package
+                    </button>
+                </div>
+            )}
+
             {/* Context Menu */}
-            {contextMenu && !contextMenu.isAccessory && (
+            {contextMenu && !contextMenu.isAccessory && !contextMenu.isPackage && (
                 <div style={{
                     position: 'fixed',
                     top: contextMenu.y,
