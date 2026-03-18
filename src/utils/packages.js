@@ -18,13 +18,17 @@ export function resolvePackageInstance(instance, catalogPkgs, projectPkgs) {
         const qtyPer = override?.qtyPerPackage !== undefined ? override.qtyPerPackage : (item.qtyPerPackage || item.qty || 1);
         const hasSystemOverride = override?.system !== undefined;
         const system = hasSystemOverride ? override.system : (pkgSystem || item.system);
+        const hasPhaseOverride = override?.phase !== undefined;
+        const phase = hasPhaseOverride ? override.phase : item.phase;
         return {
             ...item,
             qty: qtyPer * multiplier,
             qtyPerPackage: qtyPer,
             _hasOverride: override?.qtyPerPackage !== undefined,
             _hasSystemOverride: hasSystemOverride,
+            _hasPhaseOverride: hasPhaseOverride,
             ...(system !== undefined ? { system } : {}),
+            phase,
         };
     });
 

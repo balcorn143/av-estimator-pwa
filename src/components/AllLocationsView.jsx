@@ -5,8 +5,8 @@ import { Icons } from '../icons'
 import { fmtCost, fmtQty, fmtHrs } from '../utils/formatters'
 import { calculateTotals, itemMatchesSearch } from '../utils/catalog'
 import { getLocationsWithItems } from '../utils/locations'
-import { resolvePackageInstance } from '../utils/packages'
-import { SYSTEM_OPTIONS } from '../constants'
+import { resolvePackageInstance, getFlattenedItems } from '../utils/packages'
+import { PHASE_OPTIONS } from '../constants'
 import ColumnLayoutManager from './ColumnLayoutManager'
 import useFlexibleColumns from '../hooks/useFlexibleColumns'
 
@@ -43,7 +43,7 @@ export default function AllLocationsView({
     const [contextMenu, setContextMenu] = useState(null);
     const [sortField, setSortField] = useState(null);
     const [sortDir, setSortDir] = useState('asc');
-    const [systemFilter, setSystemFilter] = useState('');
+    const [phaseFilter, setPhaseFilter] = useState('');
 
     const handleSort = (field) => {
         if (sortField === field) {
@@ -83,7 +83,6 @@ export default function AllLocationsView({
         { id: 'expand', label: '', width: 30, fixed: true },
         { id: 'qty', label: 'Qty', width: 75 },
         { id: 'notes', label: 'Notes', width: 120 },
-        { id: 'system', label: 'System', width: 100 },
         { id: 'manufacturer', label: 'Manufacturer', width: 120 },
         { id: 'model', label: 'Model', width: 140 },
         { id: 'description', label: 'Description', width: 200 },
@@ -91,6 +90,7 @@ export default function AllLocationsView({
         { id: 'unitLabor', label: 'Unit Hrs', width: 70 },
         { id: 'extCost', label: 'Ext. $', width: 90 },
         { id: 'extLabor', label: 'Ext. Hrs', width: 80 },
+        { id: 'phase', label: 'Phase', width: 140 },
     ];
     const { columns: allLocCols, startResize: startAllLocResize, savedLayouts: allLocLayouts, saveLayout: saveAllLocLayout, loadLayout: loadAllLocLayout, deleteLayout: deleteAllLocLayout, resetColumns: resetAllLocColumns } = useFlexibleColumns(ALL_LOC_COLUMNS, 'workspace');
 
@@ -115,16 +115,16 @@ export default function AllLocationsView({
             filtered = filtered.filter(loc => loc.items?.some(item => item.isPlaceholder));
         }
         if (searchFilter) {
-            const term = searchFilter.toLowerCase();
-            filtered = filtered.filter(loc => loc.items?.some(item => {
-                if (item.type === 'package') {
-                    return item.packageName?.toLowerCase().includes(term);
-                }
-                return itemMatchesSearch(item, searchFilter);
-            }));
+            filtered = filtered.filter(loc => {
+                const flatItems = getFlattenedItems(loc, catalogPkgs, projectPkgs);
+                return flatItems.some(item =>
+                    itemMatchesSearch(item, searchFilter) ||
+                    item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter))
+                );
+            });
         }
         return filtered;
-    }, [allLocationsRaw, filterMode, searchFilter]);
+    }, [allLocationsRaw, filterMode, searchFilter, catalogPkgs, projectPkgs]);
 
     // Calculate item totals
     const calculateItemTotal = (item) => {
@@ -218,10 +218,10 @@ export default function AllLocationsView({
         });
     };
 
-    const changeSystem = (locationId, itemIdx, system) => {
+    const changePhase = (locationId, itemIdx, phase) => {
         onUpdate(locationId, (items) => {
             const newItems = [...items];
-            newItems[itemIdx] = { ...newItems[itemIdx], system };
+            newItems[itemIdx] = { ...newItems[itemIdx], phase };
             return newItems;
         });
     };
@@ -536,9 +536,9 @@ export default function AllLocationsView({
                     <button style={styles.smallButton} onClick={onCollapseAllLocations} title="Collapse all locations">
                         <Icons.ChevronsUp /> Collapse All
                     </button>
-                    <select value={systemFilter} onChange={e => setSystemFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
-                        <option value="">All Systems</option>
-                        {SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                    <select value={phaseFilter} onChange={e => setPhaseFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
+                        <option value="">All Phases</option>
+                        {PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
                     </select>
                 </div>
             </div>
@@ -551,24 +551,29 @@ export default function AllLocationsView({
                 const locationSelected = selectedItems[location.id] || [];
                 const mainItemCount = (location.items || []).length;
 
+                // Helper: does an item or any of its accessories match the search?
+                const itemOrAccsMatch = (item) =>
+                    itemMatchesSearch(item, searchFilter) ||
+                    item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter));
+
                 // Apply search filter
                 const filteredPkgs = searchFilter
                     ? groupedItems.packages.filter(pkg =>
                         itemMatchesSearch({ manufacturer: pkg.name, model: '', description: '' }, searchFilter) ||
-                        pkg.expandedItems?.some(item => itemMatchesSearch(item, searchFilter)))
+                        pkg.expandedItems?.some(itemOrAccsMatch))
                     : groupedItems.packages;
                 const filteredLegacyPkgs = searchFilter
                     ? groupedItems.legacyPackages.filter(pkg =>
-                        pkg.items.some(item => itemMatchesSearch(item, searchFilter)))
+                        pkg.items.some(itemOrAccsMatch))
                     : groupedItems.legacyPackages;
                 const filteredStandalone = searchFilter
-                    ? groupedItems.standalone.filter(({ item }) => itemMatchesSearch(item, searchFilter))
+                    ? groupedItems.standalone.filter(({ item }) => itemOrAccsMatch(item))
                     : groupedItems.standalone;
-                // Apply unfinished filter and system filter on top of search filter
+                // Apply unfinished filter and phase filter on top of search filter
                 let visibleStandalone = filterMode === 'unfinished'
                     ? filteredStandalone.filter(({ item }) => item.isPlaceholder)
                     : filteredStandalone;
-                if (systemFilter) visibleStandalone = visibleStandalone.filter(({ item }) => (item.system || '') === systemFilter);
+                if (phaseFilter) visibleStandalone = visibleStandalone.filter(({ item }) => (item.phase || '') === phaseFilter);
                 visibleStandalone = sortField ? [...visibleStandalone].sort((a, b) => {
                     const itemA = a.item, itemB = b.item;
                     let aVal = itemA[sortField], bVal = itemB[sortField];
@@ -686,7 +691,9 @@ export default function AllLocationsView({
                                             {/* Package instances (new format) */}
                                             {visiblePkgs.map(pkg => {
                                                 const pkgColor = styles.pkgColor(pkg.name);
-                                                const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
+                                                const isPkgExpanded = (searchFilter && pkg.expandedItems?.some(itemOrAccsMatch))
+                                                    ? true
+                                                    : expandedPackages[location.id]?.[pkg.name] !== false;
                                                 const isSelected = locationSelected.includes(pkg.idx);
 
                                                 const changePkgQty = (val) => {
@@ -702,6 +709,17 @@ export default function AllLocationsView({
                                                     onUpdate(location.id, items => {
                                                         const newItems = [...items];
                                                         newItems[pkg.idx] = { ...newItems[pkg.idx], qty: Math.max(0.01, parseFloat(raw) || 1) };
+                                                        return newItems;
+                                                    });
+                                                };
+
+                                                const changePkgItemPhase = (pkgItemIdx, phase) => {
+                                                    onUpdate(location.id, items => {
+                                                        const newItems = [...items];
+                                                        const instance = newItems[pkg.idx];
+                                                        const overrides = { ...(instance.itemOverrides || {}) };
+                                                        overrides[pkgItemIdx] = { ...(overrides[pkgItemIdx] || {}), phase };
+                                                        newItems[pkg.idx] = { ...instance, itemOverrides: overrides };
                                                         return newItems;
                                                     });
                                                 };
@@ -736,7 +754,6 @@ export default function AllLocationsView({
                                                             <td style={tdStyle}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>
                                                             <td style={tdStyle}><input type="text" inputMode="decimal" value={editingPkgQty[`${location.id}-${pkg.idx}`] !== undefined ? editingPkgQty[`${location.id}-${pkg.idx}`] : pkg.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changePkgQty(e.target.value); }} onBlur={blurPkgQty} onFocus={e => { focusPkgQty(); e.target.select(); }} style={{ ...inputStyle, width: '60px', fontWeight: '700' }} /></td>
                                                             <td style={tdStyle}></td>
-                                                            <td style={tdStyle}><select value={location.items[pkg.idx].system || ''} onChange={e => { onUpdate(location.id, items => { const newItems = [...items]; newItems[pkg.idx] = { ...newItems[pkg.idx], system: e.target.value }; return newItems; }); }} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">&#x2014;</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>
                                                             <td style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span></td>
                                                             <td style={tdStyle}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items &times; {pkg.qty}</span></td>
                                                             <td style={tdStyle}>{pkg.instance.notes || ''}</td>
@@ -744,8 +761,9 @@ export default function AllLocationsView({
                                                             <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
                                                             <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
+                                                            <td style={tdStyle}></td>
                                                         </tr>
-                                                        {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => {
+                                                        {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => {
                                                             const piKey = `${location.id}-${pkg.idx}-${itemIdx}`;
                                                             return (
                                                             <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
@@ -763,7 +781,6 @@ export default function AllLocationsView({
                                                                     />
                                                                 </td>
                                                                 <td style={{ ...tdStyle, fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}&times;{pkg.qty}{item._hasOverride ? ' (edited)' : ''}</td>
-                                                                <td style={tdStyle}><select value={item.system || ''} onChange={e => { const val = e.target.value; onUpdate(location.id, items => { const newItems = [...items]; const instance = newItems[pkg.idx]; const overrides = { ...(instance.itemOverrides || {}) }; const defaultSys = instance.system || ''; if (val === defaultSys) { if (overrides[itemIdx]) { const o = { ...overrides[itemIdx] }; delete o.system; overrides[itemIdx] = Object.keys(o).length ? o : undefined; if (!overrides[itemIdx]) delete overrides[itemIdx]; } } else { overrides[itemIdx] = { ...(overrides[itemIdx] || {}), system: val }; } newItems[pkg.idx] = { ...instance, itemOverrides: overrides }; return newItems; }); }} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px', color: item._hasSystemOverride ? '#f59e0b' : '#8b98a5' }}><option value="">&#x2014;</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, color: '#1d9bf0', fontSize: '12px' }}>{item.model}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.description}</td>
@@ -771,6 +788,7 @@ export default function AllLocationsView({
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtHrs(item.laborHrsPerUnit || 0)}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#00ba7c' }}>{fmtCost((item.qty || 0) * (item.unitCost || 0))}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtHrs((item.qty || 0) * (item.laborHrsPerUnit || 0))}</td>
+                                                                <td style={tdStyle}><select value={item.phase || ''} onChange={e => changePkgItemPhase(itemIdx, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px', color: item._hasPhaseOverride ? '#f59e0b' : '#8b98a5' }}><option value="">&#x2014;</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>
                                                             </tr>
                                                             );
                                                         })}
@@ -781,7 +799,9 @@ export default function AllLocationsView({
                                             {/* Legacy packages (old format) */}
                                             {visibleLegacyPkgs.map(pkg => {
                                                 const pkgColor = styles.pkgColor(pkg.name);
-                                                const isPkgExpanded = expandedPackages[location.id]?.[pkg.name] !== false;
+                                                const isPkgExpanded = (searchFilter && pkg.items?.some(itemOrAccsMatch))
+                                                    ? true
+                                                    : expandedPackages[location.id]?.[pkg.name] !== false;
                                                 return (
                                                     <React.Fragment key={`legacy-${pkg.name}`}>
                                                         <tr style={{ backgroundColor: pkgColor.bg, borderLeft: `4px solid ${pkgColor.b}` }}>
@@ -793,11 +813,11 @@ export default function AllLocationsView({
                                                             <td colSpan="5" style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> <span style={{ fontSize: '10px', color: '#6e767d' }}>(legacy)</span></td>
                                                             <td style={tdStyle}></td>
                                                             <td style={tdStyle}></td>
-                                                            <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
                                                             <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
+                                                            <td style={tdStyle}></td>
                                                         </tr>
-                                                        {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => {
+                                                        {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => ({ item, pkgItemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, pkgItemIdx }) => {
                                                             const i = pkg.indices[pkgItemIdx];
                                                             const isItemSelected = locationSelected.includes(i);
                                                             const itemTotal = calculateItemTotal(item);
@@ -807,7 +827,6 @@ export default function AllLocationsView({
                                                                     <td style={tdStyle}></td>
                                                                     <td style={tdStyle}><input type="text" inputMode="decimal" value={editingQty[`${location.id}-${i}`] !== undefined ? editingQty[`${location.id}-${i}`] : item.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeQty(location.id, i, e.target.value); }} onBlur={() => blurQty(location.id, i)} onFocus={e => { focusQty(location.id, i, item.qty); e.target.select(); }} style={{ ...inputStyle, width: '60px' }} /></td>
                                                                     <td style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} /></td>
-                                                                    <td style={tdStyle}><select value={item.system || ''} onChange={e => changeSystem(location.id, i, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">&#x2014;</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.manufacturer}</td>
                                                                     <td style={tdStyle}><strong>{item.model}</strong></td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px' }}>{item.description}</td>
@@ -815,6 +834,7 @@ export default function AllLocationsView({
                                                                     <td style={tdStyle}><input type="text" inputMode="decimal" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitLabor(location.id, i, e.target.value); }} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
                                                                     <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
+                                                                    <td style={tdStyle}>{PHASE_OPTIONS.find(p => p.value === item.phase)?.label || (item.phase || '')}</td>
                                                                 </tr>
                                                             );
                                                         })}
@@ -853,9 +873,6 @@ export default function AllLocationsView({
                                                             <td style={tdStyle}>
                                                                 <input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} />
                                                             </td>
-                                                            <td style={tdStyle}>
-                                                                <select value={item.system || ''} onChange={e => changeSystem(location.id, i, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">&#x2014;</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select>
-                                                            </td>
                                                             <td style={{ ...tdStyle, fontSize: '12px' }}>
                                                                 {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.manufacturer || ''} onChange={e => changeManufacturer(location.id, i, e.target.value)} placeholder="Manufacturer" style={{ ...inputStyle, width: '100%', fontSize: '12px' }} /> : item.manufacturer}
                                                             </td>
@@ -870,6 +887,7 @@ export default function AllLocationsView({
                                                             <td style={tdStyle}><input type="text" inputMode="decimal" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitLabor(location.id, i, e.target.value); }} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
                                                             <td style={{ ...tdStyle, fontSize: '12px' }}>{fmtHrs(itemTotal.labor)}</td>
+                                                            <td style={tdStyle}><select value={item.phase || ''} onChange={e => changePhase(location.id, i, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: '11px' }}><option value="">&#x2014;</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>
                                                         </tr>
 
                                                         {/* Accessories */}
@@ -889,7 +907,6 @@ export default function AllLocationsView({
                                                                 <td style={tdStyle}>
                                                                     <input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(location.id, i, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '10px' }} />
                                                                 </td>
-                                                                <td style={tdStyle}></td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>&boxuR; {acc.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.model}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.description}</td>
@@ -902,6 +919,7 @@ export default function AllLocationsView({
                                                                         <Icons.X />
                                                                     </button>
                                                                 </td>
+                                                                <td style={tdStyle}></td>
                                                             </tr>
                                                         );
                                                         })}

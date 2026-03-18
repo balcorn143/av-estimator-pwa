@@ -431,6 +431,7 @@ export default function App() {
         { id: 'model', label: 'Model', width: 120 },
         { id: 'partNumber', label: 'Part Number', width: 130 },
         { id: 'description', label: 'Description', width: 220 },
+        { id: 'phase', label: 'Phase', width: 150 },
         { id: 'unitCost', label: 'Unit Cost', width: 90 },
         { id: 'laborHrsPerUnit', label: 'Unit Labor', width: 90 },
         { id: 'extCost', label: 'Ext. Cost', width: 90 },
@@ -1400,6 +1401,7 @@ export default function App() {
                         laborHrsPerUnit: item.laborHrsPerUnit || 0,
                         uom: item.uom || 'EA',
                         vendor: item.vendor || '',
+                        phase: item.phase || '',
                         locations: [location.path || location.name],
                     };
                 }
@@ -1422,6 +1424,7 @@ export default function App() {
                                 laborHrsPerUnit: acc.laborHrsPerUnit || 0,
                                 uom: acc.uom || 'EA',
                                 vendor: acc.vendor || '',
+                                phase: acc.phase || '',
                                 locations: [location.path || location.name],
                             };
                         }
@@ -1479,6 +1482,67 @@ export default function App() {
         setProject(p => ({
             ...p,
             locations: updateLocs(p.locations),
+            packages: p.packages ? updatePkgItems(p.packages) : p.packages,
+        }));
+    };
+
+    // Update phase across all matching items in all locations (and package definitions)
+    const updateConsolidatedPhase = (partKey, phase) => {
+        if (!isProjectEditable()) return;
+        // Find indices of items in a package definition that match partKey
+        const matchingPkgItemIndices = (pkgDef) =>
+            (pkgDef.items || []).reduce((acc, item, idx) => {
+                const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
+                if (itemKey === partKey) acc.push(idx);
+                return acc;
+            }, []);
+        const updateLocs = (locs, projectPkgs) => locs.map(loc => {
+            let items = loc.items;
+            if (items) {
+                items = items.map(item => {
+                    if (item.type === 'package') {
+                        // Update itemOverrides.phase for matching items in this instance
+                        const allDefs = [...(packages || []), ...(projectPkgs || [])];
+                        const def = allDefs.find(d => d.id === item.packageId);
+                        if (!def) return item;
+                        const indices = matchingPkgItemIndices(def);
+                        if (indices.length === 0) return item;
+                        const overrides = { ...(item.itemOverrides || {}) };
+                        indices.forEach(idx => { overrides[idx] = { ...(overrides[idx] || {}), phase }; });
+                        return { ...item, itemOverrides: overrides };
+                    }
+                    const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
+                    let updatedItem = itemKey === partKey ? { ...item, phase } : item;
+                    if (updatedItem.accessories) {
+                        updatedItem = { ...updatedItem, accessories: updatedItem.accessories.map(acc => {
+                            const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                            return accKey === partKey ? { ...acc, phase } : acc;
+                        })};
+                    }
+                    return updatedItem;
+                });
+            }
+            const children = loc.children ? updateLocs(loc.children, projectPkgs) : loc.children;
+            return { ...loc, items, children };
+        });
+        const updatePkgItems = (pkgs) => pkgs.map(pkg => ({
+            ...pkg,
+            items: (pkg.items || []).map(item => {
+                const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
+                let updatedItem = itemKey === partKey ? { ...item, phase } : item;
+                if (updatedItem.accessories) {
+                    updatedItem = { ...updatedItem, accessories: updatedItem.accessories.map(acc => {
+                        const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                        return accKey === partKey ? { ...acc, phase } : acc;
+                    })};
+                }
+                return updatedItem;
+            }),
+        }));
+        setPackages(prev => updatePkgItems(prev));
+        setProject(p => ({
+            ...p,
+            locations: updateLocs(p.locations, p.packages),
             packages: p.packages ? updatePkgItems(p.packages) : p.packages,
         }));
     };
@@ -2911,7 +2975,7 @@ export default function App() {
 
                                     {showBom && (
                                         <>
-                                            <p style={{ color: '#8b98a5', fontSize: '13px', margin: '0 0 12px 0' }}>Click any Unit Cost or Unit Labor value to edit it. Changes apply to all matching items across all locations.</p>
+                                            <p style={{ color: '#8b98a5', fontSize: '13px', margin: '0 0 12px 0' }}>Click any Unit Cost or Unit Labor value to edit it. Set Phase to assign it to all matching items across all locations at once.</p>
                                             {/* Search + Category filter */}
                                             <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' }}>
                                                 <div style={{ position: 'relative', flex: 1, maxWidth: '300px' }}>
@@ -2967,6 +3031,7 @@ export default function App() {
                                                                         case 'model': return <td key={col.id} style={{ ...bomTdStyle, fontWeight: '600' }}>{b.model}</td>;
                                                                         case 'partNumber': return <td key={col.id} style={{ ...bomTdStyle, fontSize: compactMode ? '10px' : '12px', color: '#8b98a5' }}>{b.partNumber}</td>;
                                                                         case 'description': return <td key={col.id} style={bomTdStyle}>{b.description}</td>;
+                                                                        case 'phase': return <td key={col.id} style={bomTdStyle}><select value={b.phase || ''} onChange={e => updateConsolidatedPhase(b.key, e.target.value)} style={{ ...styles.inputSmall, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>;
                                                                         case 'unitCost': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|unitCost' ? <input type="text" inputMode="decimal" value={bomEditingValue} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) updateConsolidatedField(b.key, 'unitCost', v); }} onBlur={() => setBomEditingCell(null)} onKeyDown={e => { if (e.key === 'Enter') setBomEditingCell(null); }} onFocus={e => e.target.select()} style={bomInputStyle} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|unitCost'); setBomEditingValue(String(b.unitCost || 0)); }} style={{ cursor: 'pointer', display: 'block', textAlign: 'right' }}>{fmtCost(b.unitCost)}</span>}</td>;
                                                                         case 'laborHrsPerUnit': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|laborHrsPerUnit' ? <input type="text" inputMode="decimal" value={bomEditingValue} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) updateConsolidatedField(b.key, 'laborHrsPerUnit', v); }} onBlur={() => setBomEditingCell(null)} onKeyDown={e => { if (e.key === 'Enter') setBomEditingCell(null); }} onFocus={e => e.target.select()} style={bomInputStyle} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|laborHrsPerUnit'); setBomEditingValue(String(b.laborHrsPerUnit || 0)); }} style={{ cursor: 'pointer', display: 'block', textAlign: 'right' }}>{fmtHrs(b.laborHrsPerUnit)}</span>}</td>;
                                                                         case 'extCost': return <td key={col.id} style={{ ...bomTdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(b.totalQty * b.unitCost)}</td>;

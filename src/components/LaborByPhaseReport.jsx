@@ -6,6 +6,9 @@ import { Icons } from '../icons';
 import { fmtHrs } from '../utils/formatters';
 import { getLocationsWithItems } from '../utils/locations';
 import { getFlattenedItems } from '../utils/packages';
+import { PHASE_OPTIONS } from '../constants';
+
+const phaseLabel = (phase) => PHASE_OPTIONS.find(p => p.value === phase)?.label || phase;
 
 export default function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs, hierarchyGroups, compactMode }) {
     const [collapsed, setCollapsed] = useState(false);
@@ -52,7 +55,7 @@ export default function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs
 
     const exportLaborByPhase = () => {
         const { phases, locationMap, groupNames } = data;
-        const header = ['Location', ...phases, 'Total'];
+        const header = ['Location', ...phases.map(phaseLabel), 'Total'];
         const rows = groupNames.map(gn => {
             const row = [gn];
             let total = 0;
@@ -161,7 +164,7 @@ export default function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs
                         {phases.length > 1 && (
                             <select value={phaseFilter} onChange={e => setPhaseFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer' }}>
                                 <option value="">All Phases</option>
-                                {phases.map(p => <option key={p} value={p}>{p}</option>)}
+                                {phases.map(p => <option key={p} value={p}>{phaseLabel(p)}</option>)}
                             </select>
                         )}
                         {(search || phaseFilter) && (
@@ -178,7 +181,7 @@ export default function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs
                                     </th>
                                     {visiblePhases.map(phase => (
                                         <th key={phase} style={{ ...thStyle, minWidth: '90px', textAlign: 'right' }} onClick={() => handleSort(phase)}>
-                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end', width: '100%' }}>{phase}<SortIcon field={phase} /></span>
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end', width: '100%' }}>{phaseLabel(phase)}<SortIcon field={phase} /></span>
                                         </th>
                                     ))}
                                     <th style={{ ...thStyle, minWidth: '90px', textAlign: 'right', fontWeight: '700' }} onClick={() => handleSort('total')}>

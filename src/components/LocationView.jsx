@@ -5,7 +5,7 @@ import { Icons } from '../icons'
 import { fmtCost, fmtQty, fmtHrs, formatHours } from '../utils/formatters'
 import { calculateTotals, itemMatchesSearch } from '../utils/catalog'
 import { resolvePackageInstance } from '../utils/packages'
-import { SYSTEM_OPTIONS, DEFAULT_COLUMNS } from '../constants'
+import { PHASE_OPTIONS, DEFAULT_COLUMNS } from '../constants'
 import ColumnLayoutManager from './ColumnLayoutManager'
 import useFlexibleColumns from '../hooks/useFlexibleColumns'
 
@@ -17,7 +17,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     const [contextMenu, setContextMenu] = useState(null); // { x, y, itemIdx, isAccessory, accIdx, isPackage, packageName }
     const [sortField, setSortField] = useState(null);
     const [sortDir, setSortDir] = useState('asc');
-    const [systemFilter, setSystemFilter] = useState('');
+    const [phaseFilter, setPhaseFilter] = useState('');
 
     const handleSort = (field) => {
         if (sortField === field) {
@@ -77,7 +77,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     };
 
     // Render a cell based on column ID for main items
-    const renderItemCell = (col, item, itemIdx, { isSelected, hasAccessories, isExpanded, itemTotal, isPackageItem, pkgColor, changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand }) => {
+    const renderItemCell = (col, item, itemIdx, { isSelected, hasAccessories, isExpanded, itemTotal, isPackageItem, pkgColor, changeQty, changeNotes, toggleSelect, toggleItemExpand }) => {
         const tdStyle = { ...styles.td, ...compactStyles.td };
         const inputStyle = { ...styles.inputSmall, ...compactStyles.input };
         switch (col.id) {
@@ -93,8 +93,8 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                 return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingQty[itemIdx] !== undefined ? editingQty[itemIdx] : item.qty} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeQty(itemIdx, e.target.value); }} onBlur={() => blurQty(itemIdx)} onFocus={e => { focusQty(itemIdx, item.qty); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '50px' : '60px' }} /></td>;
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(itemIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '10px' : '11px' }} /></td>;
-            case 'system':
-                return <td key={col.id} style={tdStyle}><select value={item.system || ''} onChange={e => changeSystem(itemIdx, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>;
+            case 'phase':
+                return <td key={col.id} style={tdStyle}><select value={item.phase || ''} onChange={e => changePhase(itemIdx, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>;
             case 'manufacturer':
                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px', color: isPackageItem ? '#8b98a5' : undefined }}>
                     {isPackageItem && <span style={{ color: '#6e767d' }}>├ </span>}
@@ -137,7 +137,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
             }
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(itemIdx, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
-            case 'system':
+            case 'phase':
                 return <td key={col.id} style={tdStyle}></td>;
             case 'manufacturer':
                 return <td key={col.id} style={tdStyle}><span style={{ color: '#4a5568' }}>└ </span>{acc.manufacturer}</td>;
@@ -242,28 +242,42 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
         return { packages: packageInstances, legacyPackages: Object.values(legacyPackages), standalone };
     }, [location.items, catalogPkgs, projectPkgs]);
 
-    // Apply search filter and system filter to visible items
+    // Apply search filter and phase filter to visible items
     const filteredStandalone = useMemo(() => {
         let items = groupedItems.standalone;
-        if (searchFilter) items = items.filter(({ item }) => itemMatchesSearch(item, searchFilter));
-        if (systemFilter) items = items.filter(({ item }) => (item.system || '') === systemFilter);
+        if (searchFilter) items = items.filter(({ item }) =>
+            itemMatchesSearch(item, searchFilter) ||
+            item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter))
+        );
+        if (phaseFilter) items = items.filter(({ item }) => (item.phase || '') === phaseFilter);
         return sortItems(items, ({ item }) => item);
-    }, [groupedItems.standalone, searchFilter, systemFilter, sortField, sortDir]);
+    }, [groupedItems.standalone, searchFilter, phaseFilter, sortField, sortDir]);
     const filteredPackages = useMemo(() => {
         let pkgs = groupedItems.packages;
         if (searchFilter) pkgs = pkgs.filter(pkg =>
             itemMatchesSearch({ manufacturer: pkg.name, model: '', description: '' }, searchFilter) ||
-            pkg.expandedItems?.some(item => itemMatchesSearch(item, searchFilter))
+            pkg.expandedItems?.some(item =>
+                itemMatchesSearch(item, searchFilter) ||
+                item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter))
+            )
         );
         return pkgs;
     }, [groupedItems.packages, searchFilter]);
     const filteredLegacyPackages = useMemo(() => {
         let pkgs = groupedItems.legacyPackages;
         if (searchFilter) pkgs = pkgs.filter(pkg =>
-            pkg.items.some(item => itemMatchesSearch(item, searchFilter))
+            pkg.items.some(item =>
+                itemMatchesSearch(item, searchFilter) ||
+                item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter))
+            )
         );
         return pkgs;
     }, [groupedItems.legacyPackages, searchFilter]);
+
+    // Helper for render: does an item or any of its accessories match the search?
+    const itemOrAccsMatch = (item) =>
+        itemMatchesSearch(item, searchFilter) ||
+        item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter));
     // Collect all visible item indices for select-all
     const visibleIndices = useMemo(() => {
         const indices = [];
@@ -334,9 +348,9 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
         onUpdate(location.id, items);
     };
 
-    const changeSystem = (itemIdx, system) => {
+    const changePhase = (itemIdx, phase) => {
         const items = [...location.items];
-        items[itemIdx] = { ...items[itemIdx], system };
+        items[itemIdx] = { ...items[itemIdx], phase };
         onUpdate(location.id, items);
     };
 
@@ -700,9 +714,9 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                             )}
                             {clipboard.length > 0 && <button style={{ ...styles.smallButton, backgroundColor: '#1a3d2e', color: '#00ba7c' }} onClick={handlePaste}><Icons.Clipboard /> Paste ({clipboard.length})</button>}
                             {templates && templates.length > 0 && <button style={{ ...styles.smallButton, backgroundColor: '#2d1a3d', color: '#a78bfa' }} onClick={onApplyTemplate}><Icons.Template /> Apply Template</button>}
-                            <select value={systemFilter} onChange={e => setSystemFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
-                                <option value="">All Systems</option>
-                                {SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                            <select value={phaseFilter} onChange={e => setPhaseFilter(e.target.value)} style={{ ...styles.inputSmall, width: 'auto', cursor: 'pointer', fontSize: '12px', padding: '4px 8px' }}>
+                                <option value="">All Phases</option>
+                                {PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
                             </select>
                             <button style={styles.button('primary')} onClick={onSearch}><Icons.Plus /> Add</button>
                             <button style={{ ...styles.smallButton, backgroundColor: '#2a1f0a', color: '#f59e0b', border: '1px solid #f59e0b40' }} onClick={addEmptyItem} title="Add empty placeholder line item"><Icons.Plus /> Empty Item</button>
@@ -753,7 +767,9 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                 {/* Package instances (new format) */}
                                 {filteredPackages.map(pkg => {
                                     const pkgColor = styles.pkgColor(pkg.name);
-                                    const isPkgExpanded = expandedPackages[pkg.name] !== false;
+                                    const isPkgExpanded = (searchFilter && pkg.expandedItems?.some(itemOrAccsMatch))
+                                        ? true
+                                        : expandedPackages[pkg.name] !== false;
                                     const isSelected = selectedItems.includes(pkg.idx);
                                     const togglePkgSelect = (e) => toggleSelect(pkg.idx, e);
 
@@ -779,6 +795,15 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                     const focusPkgItemQty = (pkgItemIdx, currentVal) => {
                                         setEditingPkgItemQty(prev => ({ ...prev, [`${pkg.idx}-${pkgItemIdx}`]: String(currentVal ?? 0) }));
                                     };
+                                    const changePkgItemPhase = (pkgItemIdx, phase) => {
+                                        const items = [...location.items];
+                                        const instance = items[pkg.idx];
+                                        const overrides = { ...(instance.itemOverrides || {}) };
+                                        overrides[pkgItemIdx] = { ...(overrides[pkgItemIdx] || {}), phase };
+                                        items[pkg.idx] = { ...instance, itemOverrides: overrides };
+                                        onUpdate(location.id, items);
+                                    };
+
                                     const blurPkgItemQty = (pkgItemIdx) => {
                                         const key = `${pkg.idx}-${pkgItemIdx}`;
                                         const raw = editingPkgItemQty[key];
@@ -809,7 +834,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                     </td>;
                                                     if (col.id === 'model') return <td key={col.id} style={tdS}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items x {pkg.qty}</span></td>;
                                                     if (col.id === 'description') return <td key={col.id} style={tdS}>{pkg.instance.notes || ''}</td>;
-                                                    if (col.id === 'system') return <td key={col.id} style={tdS}><select value={location.items[pkg.idx].system || ''} onChange={e => { const items = [...location.items]; items[pkg.idx] = { ...items[pkg.idx], system: e.target.value }; onUpdate(location.id, items); }} style={{ ...styles.inputSmall, ...compactStyles.input, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>;
+                                                    if (col.id === 'phase') return <td key={col.id} style={tdS}></td>;
                                                     if (col.id === 'extCost') return <td key={col.id} style={{ ...tdS, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>;
                                                     if (col.id === 'extLabor' || col.id === 'labor') return <td key={col.id} style={tdS}>{fmtHrs(pkg.labor)}</td>;
                                                     return <td key={col.id} style={tdS}></td>;
@@ -817,7 +842,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                             </tr>
 
                                             {/* Expanded package items (read-only, computed from definition) */}
-                                            {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => (
+                                            {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => (
                                                 <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
                                                     onMouseEnter={e => e.currentTarget.style.backgroundColor = '#182430'}
                                                     onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
@@ -840,7 +865,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                         if (col.id === 'notes') return <td key={col.id} style={tdS}><span style={{ fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}x{pkg.qty}{item._hasOverride ? ' (edited)' : ''}</span></td>;
                                                         if (col.id === 'manufacturer') return <td key={col.id} style={tdS}>{item.manufacturer}</td>;
                                                         if (col.id === 'model') return <td key={col.id} style={{ ...tdS, color: '#1d9bf0' }}>{item.model}</td>;
-                                                        if (col.id === 'system') return <td key={col.id} style={tdS}><select value={item.system || ''} onChange={e => { const val = e.target.value; const items = [...location.items]; const instance = items[pkg.idx]; const overrides = { ...(instance.itemOverrides || {}) }; const defaultSys = instance.system || ''; if (val === defaultSys) { if (overrides[itemIdx]) { const o = { ...overrides[itemIdx] }; delete o.system; overrides[itemIdx] = Object.keys(o).length ? o : undefined; if (!overrides[itemIdx]) delete overrides[itemIdx]; } } else { overrides[itemIdx] = { ...(overrides[itemIdx] || {}), system: val }; } items[pkg.idx] = { ...instance, itemOverrides: overrides }; onUpdate(location.id, items); }} style={{ ...styles.inputSmall, ...compactStyles.input, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px', color: item._hasSystemOverride ? '#f59e0b' : '#8b98a5' }}><option value="">—</option>{SYSTEM_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td>;
+                                                        if (col.id === 'phase') return <td key={col.id} style={tdS}><select value={item.phase || ''} onChange={e => changePkgItemPhase(itemIdx, e.target.value)} style={{ ...styles.inputSmall, ...compactStyles.input, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px', color: item._hasPhaseOverride ? '#f59e0b' : '#8b98a5' }}><option value="">—</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>;
                                                         if (col.id === 'description') return <td key={col.id} style={tdS}>{item.description}</td>;
                                                         if (col.id === 'unitCost') return <td key={col.id} style={tdS}>{fmtCost(item.unitCost || 0)}</td>;
                                                         if (col.id === 'unitLabor') return <td key={col.id} style={tdS}>{fmtHrs(item.laborHrsPerUnit || 0)}</td>;
@@ -857,7 +882,9 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                 {/* Legacy packages (old format, backward compat) */}
                                 {filteredLegacyPackages.map(pkg => {
                                     const pkgColor = styles.pkgColor(pkg.name);
-                                    const isPkgExpanded = expandedPackages[pkg.name] !== false;
+                                    const isPkgExpanded = (searchFilter && pkg.items?.some(itemOrAccsMatch))
+                                        ? true
+                                        : expandedPackages[pkg.name] !== false;
                                     const allPkgItemsSelected = pkg.indices.every(idx => selectedItems.includes(idx));
 
                                     const toggleLegacyPkgSelect = () => {
@@ -881,7 +908,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                     return <td key={col.id} style={tdS}></td>;
                                                 })}
                                             </tr>
-                                            {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => {
+                                            {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => ({ item, pkgItemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, pkgItemIdx }) => {
                                                 const i = pkg.indices[pkgItemIdx];
                                                 const isItemSelected = selectedItems.includes(i);
                                                 const itemTotal = calculateItemTotal(item);
@@ -892,7 +919,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                         {columns.map(col => renderItemCell(col, item, i, {
                                                             isSelected: isItemSelected, hasAccessories: item.accessories?.length > 0, isExpanded: expandedItems[i] !== false, itemTotal,
                                                             isPackageItem: true, pkgColor,
-                                                            changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand
+                                                            changeQty, changeNotes, toggleSelect, toggleItemExpand
                                                         }))}
                                                     </tr>
                                                 );
@@ -919,7 +946,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                 {columns.map(col => renderItemCell(col, item, i, {
                                                     isSelected, hasAccessories, isExpanded, itemTotal,
                                                     isPackageItem: false, pkgColor: null,
-                                                    changeQty, changeNotes, changeSystem, toggleSelect, toggleItemExpand
+                                                    changeQty, changeNotes, toggleSelect, toggleItemExpand
                                                 }))}
                                             </tr>
 

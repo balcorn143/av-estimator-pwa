@@ -60,7 +60,6 @@ export const DEFAULT_COLUMNS = [
     { id: 'expand', label: '', width: 30, fixed: true },
     { id: 'qty', label: 'Qty', width: 75 },
     { id: 'notes', label: 'Notes', width: 120 },
-    { id: 'system', label: 'System', width: 100 },
     { id: 'manufacturer', label: 'Manufacturer', width: 120 },
     { id: 'model', label: 'Model', width: 140 },
     { id: 'description', label: 'Description', width: 200 },
@@ -68,6 +67,7 @@ export const DEFAULT_COLUMNS = [
     { id: 'unitLabor', label: 'Unit Labor', width: 80 },
     { id: 'extCost', label: 'Ext. Cost', width: 90 },
     { id: 'extLabor', label: 'Ext. Labor', width: 80 },
+    { id: 'phase', label: 'Phase', width: 140 },
 ];
 
 export const CATALOG_COLUMNS = [
@@ -94,7 +94,6 @@ export const ALL_LOC_COLUMNS = [
     { id: 'expand', label: '', width: 30, fixed: true },
     { id: 'qty', label: 'Qty', width: 75 },
     { id: 'notes', label: 'Notes', width: 120 },
-    { id: 'system', label: 'System', width: 100 },
     { id: 'manufacturer', label: 'Manufacturer', width: 120 },
     { id: 'model', label: 'Model', width: 140 },
     { id: 'description', label: 'Description', width: 200 },
@@ -102,4 +101,5 @@ export const ALL_LOC_COLUMNS = [
     { id: 'unitLabor', label: 'Unit Hrs', width: 70 },
     { id: 'extCost', label: 'Ext. $', width: 90 },
     { id: 'extLabor', label: 'Ext. Hrs', width: 80 },
+    { id: 'phase', label: 'Phase', width: 140 },
 ];
