@@ -1,4 +1,4 @@
-const CACHE_NAME = 'av-estimator-v49';
+const CACHE_NAME = 'av-estimator-v50';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -31,11 +31,18 @@ self.addEventListener('activate', event => {
 
 // Fetch - network first for HTML/JSON, cache first for static assets
 self.addEventListener('fetch', event => {
+  // Only intercept GET requests. POST/PUT/DELETE/etc. pass through
+  // to the network natively — they can't be cached anyway, and trying
+  // crashes the service worker.
+  if (event.request.method !== 'GET') {
+    return;
+  }
+
   const url = new URL(event.request.url);
 
-  // Pass through Supabase API requests without caching
+  // Pass through Supabase API requests without caching (always fresh data).
+  // Returning without respondWith lets the browser handle it natively.
   if (url.hostname.includes('supabase.co')) {
-    event.respondWith(fetch(event.request));
     return;
   }
 
@@ -55,8 +62,8 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // For hashed assets (Vite output like index-abc123.js), cache aggressively
-  // For other static assets, try cache first then network
+  // For hashed assets (Vite output like index-abc123.js), cache aggressively.
+  // For other static assets, try cache first then network.
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
