@@ -1,0 +1,13 @@
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #1a1f26; }
+::-webkit-scrollbar-thumb { background: #2f3336; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #404447; }
+input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #1d9bf0; }
+h1, h2, h3, h4, h5, h6, p, span, label, div { color: inherit; }
+body { color: #e7e9ea; }
+input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cursor: pointer; }
+select { color: #e7e9ea; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
