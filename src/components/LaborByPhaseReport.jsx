@@ -49,7 +49,17 @@ export default function LaborByPhaseReport({ locations, catalogPkgs, projectPkgs
             }
         }
 
-        const phases = [...phaseSet].sort((a, b) => a === 'Unphased' ? 1 : b === 'Unphased' ? -1 : a.localeCompare(b));
+        const PHASE_ORDER = ['Rough-In 27-41 00', 'Trim Out 27-41 23', 'Finish 27-41 33', 'Programming 27-41 17', 'Management 27-41 16'];
+        const phases = [...phaseSet].sort((a, b) => {
+            if (a === 'Unphased') return 1;
+            if (b === 'Unphased') return -1;
+            const ai = PHASE_ORDER.indexOf(a);
+            const bi = PHASE_ORDER.indexOf(b);
+            if (ai !== -1 && bi !== -1) return ai - bi;
+            if (ai !== -1) return -1;
+            if (bi !== -1) return 1;
+            return a.localeCompare(b);
+        });
         return { phases, locationMap, groupNames };
     }, [locations, catalogPkgs, projectPkgs, hierarchyGroups]);
 

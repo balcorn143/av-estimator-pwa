@@ -20,13 +20,34 @@ export function resolvePackageInstance(instance, catalogPkgs, projectPkgs) {
         const system = hasSystemOverride ? override.system : (pkgSystem || item.system);
         const hasPhaseOverride = override?.phase !== undefined;
         const phase = hasPhaseOverride ? override.phase : item.phase;
+        const hasUnitCostOverride = override?.unitCost !== undefined;
+        const unitCost = hasUnitCostOverride ? override.unitCost : item.unitCost;
+        const hasLaborOverride = override?.laborHrsPerUnit !== undefined;
+        const laborHrsPerUnit = hasLaborOverride ? override.laborHrsPerUnit : item.laborHrsPerUnit;
+        const hasManufacturerOverride = override?.manufacturer !== undefined;
+        const manufacturer = hasManufacturerOverride ? override.manufacturer : item.manufacturer;
+        const hasModelOverride = override?.model !== undefined;
+        const model = hasModelOverride ? override.model : item.model;
+        const hasDescriptionOverride = override?.description !== undefined;
+        const description = hasDescriptionOverride ? override.description : item.description;
+        const hasNotesOverride = override?.notes !== undefined;
+        const notes = hasNotesOverride ? override.notes : (item.notes || '');
         return {
             ...item,
             qty: qtyPer * multiplier,
             qtyPerPackage: qtyPer,
+            unitCost,
+            laborHrsPerUnit,
+            manufacturer,
+            model,
+            description,
+            notes,
             _hasOverride: override?.qtyPerPackage !== undefined,
             _hasSystemOverride: hasSystemOverride,
             _hasPhaseOverride: hasPhaseOverride,
+            _hasUnitCostOverride: hasUnitCostOverride,
+            _hasLaborOverride: hasLaborOverride,
+            _hasCatalogFieldOverride: hasManufacturerOverride || hasModelOverride || hasDescriptionOverride || hasNotesOverride,
             ...(system !== undefined ? { system } : {}),
             phase,
         };

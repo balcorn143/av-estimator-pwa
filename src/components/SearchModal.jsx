@@ -87,8 +87,6 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
             );
         }
 
-        // Sort favorites first
-        filtered.sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0));
         return filtered.slice(0, 50);
     }, [catalog, search, filterCategory, filterSubcategory, filterManufacturer]);
 
@@ -263,7 +261,7 @@ export default function SearchModal({ catalog, packages, projectPackages, onClos
                                     onMouseLeave={e => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px' }}>
                                         <div style={{ flex: 1, minWidth: 0 }}>
-                                            <div style={{ fontWeight: '600', marginBottom: '2px' }}>{item.favorite && <span style={{ color: '#f59e0b', marginRight: '4px' }}><Icons.Star filled /></span>}{item.manufacturer} <span style={{ color: '#1d9bf0' }}>{item.model}</span></div>
+                                            <div style={{ fontWeight: '600', marginBottom: '2px' }}>{item.manufacturer} <span style={{ color: '#1d9bf0' }}>{item.model}</span></div>
                                             <div style={{ fontSize: '12px', color: '#6e767d', marginBottom: '4px' }}>{item.partNumber}</div>
                                             <div style={{ fontSize: '13px', color: '#8b98a5', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.description}</div>
                                         </div>

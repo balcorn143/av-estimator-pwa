@@ -9,7 +9,7 @@ import { PHASE_OPTIONS, DEFAULT_COLUMNS } from '../constants'
 import ColumnLayoutManager from './ColumnLayoutManager'
 import useFlexibleColumns from '../hooks/useFlexibleColumns'
 
-export default function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage, searchFilter, onEditPackage }) {
+export default function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, onUpdateFromCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage, searchFilter, onEditPackage }) {
     const [selectedItems, setSelectedItems] = useState([]);
     const [expandedItems, setExpandedItems] = useState({}); // Track which items are expanded (by index)
     const [expandedPackages, setExpandedPackages] = useState({}); // Track which packages are expanded
@@ -98,15 +98,15 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
             case 'manufacturer':
                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px', color: isPackageItem ? '#8b98a5' : undefined }}>
                     {isPackageItem && <span style={{ color: '#6e767d' }}>├ </span>}
-                    {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.manufacturer || ''} onChange={e => changeManufacturer(itemIdx, e.target.value)} placeholder="Manufacturer" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} /> : item.manufacturer}
+                    <input type="text" value={item.manufacturer || ''} onChange={e => changeManufacturer(itemIdx, e.target.value)} placeholder="Manufacturer" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} />
                 </td>;
             case 'model':
                 return <td key={col.id} style={tdStyle}>
-                    {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.model || ''} onChange={e => changeModel(itemIdx, e.target.value)} placeholder="Model / Name" style={{ ...inputStyle, width: '100%', fontWeight: '600' }} /> : <strong>{item.model}</strong>}
+                    <input type="text" value={item.model || ''} onChange={e => changeModel(itemIdx, e.target.value)} placeholder="Model / Name" style={{ ...inputStyle, width: '100%', fontWeight: '600' }} />
                 </td>;
             case 'description':
                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>
-                    {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.description || ''} onChange={e => changeDescription(itemIdx, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} /> : item.description}
+                    <input type="text" value={item.description || ''} onChange={e => changeDescription(itemIdx, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} />
                     {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
                 </td>;
             case 'unitCost':
@@ -138,13 +138,13 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
             case 'notes':
                 return <td key={col.id} style={tdStyle}><input type="text" value={acc.notes || ''} onChange={e => changeAccessoryNotes(itemIdx, accIdx, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
             case 'phase':
-                return <td key={col.id} style={tdStyle}></td>;
+                return <td key={col.id} style={tdStyle}><select value={acc.phase || ''} onChange={e => changeAccessoryPhase(itemIdx, accIdx, e.target.value)} style={{ ...inputStyle, width: '100%', cursor: 'pointer', fontSize: compactMode ? '9px' : '10px' }}><option value="">—</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>;
             case 'manufacturer':
-                return <td key={col.id} style={tdStyle}><span style={{ color: '#4a5568' }}>└ </span>{acc.manufacturer}</td>;
+                return <td key={col.id} style={tdStyle}><span style={{ color: '#4a5568' }}>└ </span><input type="text" value={acc.manufacturer || ''} onChange={e => changeAccessoryManufacturer(itemIdx, accIdx, e.target.value)} placeholder="Manufacturer" style={{ ...inputStyle, width: 'calc(100% - 16px)', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             case 'model':
-                return <td key={col.id} style={{ ...tdStyle, color: '#8b98a5' }}>{acc.model}</td>;
+                return <td key={col.id} style={tdStyle}><input type="text" value={acc.model || ''} onChange={e => changeAccessoryModel(itemIdx, accIdx, e.target.value)} placeholder="Model" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             case 'description':
-                return <td key={col.id} style={tdStyle}>{acc.description}</td>;
+                return <td key={col.id} style={tdStyle}><input type="text" value={acc.description || ''} onChange={e => changeAccessoryDescription(itemIdx, accIdx, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
             case 'unitCost': {
                 const accKey = `${itemIdx}-${accIdx}`;
                 return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingAccCost[accKey] !== undefined ? editingAccCost[accKey] : (acc.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccessoryUnitCost(itemIdx, accIdx, e.target.value); }} onBlur={() => blurAccessoryUnitCost(itemIdx, accIdx)} onFocus={e => { focusAccCost(itemIdx, accIdx, acc.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
@@ -396,6 +396,8 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     const [editingAccQty, setEditingAccQty] = useState({}); // { [`${itemIdx}-${accIdx}`]: string }
     const [editingPkgQty, setEditingPkgQty] = useState({}); // { [pkgIdx]: string }
     const [editingPkgItemQty, setEditingPkgItemQty] = useState({}); // { [`${pkgIdx}-${itemIdx}`]: string }
+    const [editingPkgItemCost, setEditingPkgItemCost] = useState({}); // { [`${pkgIdx}-${itemIdx}`]: string }
+    const [editingPkgItemLabor, setEditingPkgItemLabor] = useState({}); // { [`${pkgIdx}-${itemIdx}`]: string }
 
     const focusUnitCost = (itemIdx, currentVal) => {
         setEditingCost(prev => ({ ...prev, [itemIdx]: String(currentVal || 0) }));
@@ -462,6 +464,27 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     const changeAccessoryNotes = (itemIdx, accIdx, notes) => {
         const items = [...location.items];
         items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, notes } : a) };
+        onUpdate(location.id, items);
+    };
+
+    const changeAccessoryPhase = (itemIdx, accIdx, phase) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, phase } : a) };
+        onUpdate(location.id, items);
+    };
+    const changeAccessoryManufacturer = (itemIdx, accIdx, manufacturer) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, manufacturer } : a) };
+        onUpdate(location.id, items);
+    };
+    const changeAccessoryModel = (itemIdx, accIdx, model) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, model } : a) };
+        onUpdate(location.id, items);
+    };
+    const changeAccessoryDescription = (itemIdx, accIdx, description) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, description } : a) };
         onUpdate(location.id, items);
     };
 
@@ -722,7 +745,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                             <button style={{ ...styles.smallButton, backgroundColor: '#2a1f0a', color: '#f59e0b', border: '1px solid #f59e0b40' }} onClick={addEmptyItem} title="Add empty placeholder line item"><Icons.Plus /> Empty Item</button>
                         </div>
                     </div>
-                    <div style={{ maxHeight: '50vh', overflowY: 'auto', overflowX: 'auto' }}>
+                    <div style={{ overflowX: 'auto' }}>
                         <table style={{ ...styles.table, minWidth: columns.reduce((a, c) => a + c.width, 0) }}>
                             <colgroup>
                                 {columns.map((col, i) => <col key={col.id} style={{ width: col.width }} />)}
@@ -818,6 +841,33 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                         onUpdate(location.id, items);
                                     };
 
+                                    const changePkgItemField = (pkgItemIdx, field, value) => {
+                                        const items = [...location.items];
+                                        const instance = items[pkg.idx];
+                                        const overrides = { ...(instance.itemOverrides || {}) };
+                                        overrides[pkgItemIdx] = { ...(overrides[pkgItemIdx] || {}), [field]: value };
+                                        items[pkg.idx] = { ...instance, itemOverrides: overrides };
+                                        onUpdate(location.id, items);
+                                    };
+                                    const focusPkgItemCost = (pkgItemIdx, currentVal) => {
+                                        setEditingPkgItemCost(prev => ({ ...prev, [`${pkg.idx}-${pkgItemIdx}`]: String(currentVal || 0) }));
+                                    };
+                                    const blurPkgItemCost = (pkgItemIdx) => {
+                                        const key = `${pkg.idx}-${pkgItemIdx}`;
+                                        const val = parseFloat(editingPkgItemCost[key]) || 0;
+                                        setEditingPkgItemCost(prev => { const n = { ...prev }; delete n[key]; return n; });
+                                        changePkgItemField(pkgItemIdx, 'unitCost', val);
+                                    };
+                                    const focusPkgItemLabor = (pkgItemIdx, currentVal) => {
+                                        setEditingPkgItemLabor(prev => ({ ...prev, [`${pkg.idx}-${pkgItemIdx}`]: String(currentVal || 0) }));
+                                    };
+                                    const blurPkgItemLabor = (pkgItemIdx) => {
+                                        const key = `${pkg.idx}-${pkgItemIdx}`;
+                                        const val = parseFloat(editingPkgItemLabor[key]) || 0;
+                                        setEditingPkgItemLabor(prev => { const n = { ...prev }; delete n[key]; return n; });
+                                        changePkgItemField(pkgItemIdx, 'laborHrsPerUnit', val);
+                                    };
+
                                     return (
                                         <React.Fragment key={`pkg-${pkg.idx}`}>
                                             {/* Package header row */}
@@ -841,8 +891,11 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                 })}
                                             </tr>
 
-                                            {/* Expanded package items (read-only, computed from definition) */}
-                                            {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => (
+                                            {/* Expanded package items */}
+                                            {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => {
+                                                const eKey = `${pkg.idx}-${itemIdx}`;
+                                                const inpS = { ...styles.inputSmall, ...compactStyles.input };
+                                                return (
                                                 <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
                                                     onMouseEnter={e => e.currentTarget.style.backgroundColor = '#182430'}
                                                     onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0d1117'}>
@@ -850,31 +903,53 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                         const tdS = { ...styles.td, ...compactStyles.td, width: col.width + 'px', color: '#8b98a5', fontSize: '12px' };
                                                         if (col.id === 'checkbox') return <td key={col.id} style={tdS}></td>;
                                                         if (col.id === 'expand') return <td key={col.id} style={tdS}></td>;
-                                                        if (col.id === 'qty') {
-                                                            const eKey = `${pkg.idx}-${itemIdx}`;
-                                                            return <td key={col.id} style={tdS}>
-                                                                <input type="text" inputMode="decimal"
-                                                                    value={editingPkgItemQty[eKey] !== undefined ? editingPkgItemQty[eKey] : item.qty}
-                                                                    onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changePkgItemQty(itemIdx, e.target.value); }}
-                                                                    onBlur={() => blurPkgItemQty(itemIdx)}
-                                                                    onFocus={e => { focusPkgItemQty(itemIdx, item.qty); e.target.select(); }}
-                                                                    style={{ ...styles.inputSmall, ...compactStyles.input, width: compactMode ? '50px' : '60px', color: item._hasOverride ? '#f59e0b' : '#8b98a5' }}
-                                                                />
-                                                            </td>;
-                                                        }
-                                                        if (col.id === 'notes') return <td key={col.id} style={tdS}><span style={{ fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}x{pkg.qty}{item._hasOverride ? ' (edited)' : ''}</span></td>;
-                                                        if (col.id === 'manufacturer') return <td key={col.id} style={tdS}>{item.manufacturer}</td>;
-                                                        if (col.id === 'model') return <td key={col.id} style={{ ...tdS, color: '#1d9bf0' }}>{item.model}</td>;
-                                                        if (col.id === 'phase') return <td key={col.id} style={tdS}><select value={item.phase || ''} onChange={e => changePkgItemPhase(itemIdx, e.target.value)} style={{ ...styles.inputSmall, ...compactStyles.input, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px', color: item._hasPhaseOverride ? '#f59e0b' : '#8b98a5' }}><option value="">—</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>;
-                                                        if (col.id === 'description') return <td key={col.id} style={tdS}>{item.description}</td>;
-                                                        if (col.id === 'unitCost') return <td key={col.id} style={tdS}>{fmtCost(item.unitCost || 0)}</td>;
-                                                        if (col.id === 'unitLabor') return <td key={col.id} style={tdS}>{fmtHrs(item.laborHrsPerUnit || 0)}</td>;
+                                                        if (col.id === 'qty') return <td key={col.id} style={tdS}>
+                                                            <input type="text" inputMode="decimal"
+                                                                value={editingPkgItemQty[eKey] !== undefined ? editingPkgItemQty[eKey] : item.qty}
+                                                                onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changePkgItemQty(itemIdx, e.target.value); }}
+                                                                onBlur={() => blurPkgItemQty(itemIdx)}
+                                                                onFocus={e => { focusPkgItemQty(itemIdx, item.qty); e.target.select(); }}
+                                                                style={{ ...inpS, width: compactMode ? '50px' : '60px', color: item._hasOverride ? '#f59e0b' : '#8b98a5' }}
+                                                            />
+                                                        </td>;
+                                                        if (col.id === 'notes') return <td key={col.id} style={tdS}>
+                                                            <input type="text" value={item.notes || ''} onChange={e => changePkgItemField(itemIdx, 'notes', e.target.value)} placeholder="..." style={{ ...inpS, width: '100%', fontSize: compactMode ? '9px' : '10px', color: item._hasCatalogFieldOverride ? '#f59e0b' : '#6e767d' }} />
+                                                        </td>;
+                                                        if (col.id === 'manufacturer') return <td key={col.id} style={tdS}>
+                                                            <input type="text" value={item.manufacturer || ''} onChange={e => changePkgItemField(itemIdx, 'manufacturer', e.target.value)} placeholder="Manufacturer" style={{ ...inpS, width: '100%', fontSize: compactMode ? '11px' : '12px', color: item._hasCatalogFieldOverride ? '#f59e0b' : '#8b98a5' }} />
+                                                        </td>;
+                                                        if (col.id === 'model') return <td key={col.id} style={tdS}>
+                                                            <input type="text" value={item.model || ''} onChange={e => changePkgItemField(itemIdx, 'model', e.target.value)} placeholder="Model" style={{ ...inpS, width: '100%', color: item._hasCatalogFieldOverride ? '#f59e0b' : '#1d9bf0' }} />
+                                                        </td>;
+                                                        if (col.id === 'phase') return <td key={col.id} style={tdS}><select value={item.phase || ''} onChange={e => changePkgItemPhase(itemIdx, e.target.value)} style={{ ...inpS, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px', color: item._hasPhaseOverride ? '#f59e0b' : '#8b98a5' }}><option value="">—</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>;
+                                                        if (col.id === 'description') return <td key={col.id} style={tdS}>
+                                                            <input type="text" value={item.description || ''} onChange={e => changePkgItemField(itemIdx, 'description', e.target.value)} placeholder="Description" style={{ ...inpS, width: '100%', fontSize: compactMode ? '10px' : '11px', color: item._hasCatalogFieldOverride ? '#f59e0b' : '#8b98a5' }} />
+                                                        </td>;
+                                                        if (col.id === 'unitCost') return <td key={col.id} style={tdS}>
+                                                            <input type="text" inputMode="decimal"
+                                                                value={editingPkgItemCost[eKey] !== undefined ? editingPkgItemCost[eKey] : (item.unitCost || 0)}
+                                                                onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) setEditingPkgItemCost(prev => ({ ...prev, [eKey]: e.target.value })); }}
+                                                                onBlur={() => blurPkgItemCost(itemIdx)}
+                                                                onFocus={e => { focusPkgItemCost(itemIdx, item.unitCost); e.target.select(); }}
+                                                                style={{ ...inpS, width: compactMode ? '70px' : '80px', textAlign: 'right', color: item._hasUnitCostOverride ? '#f59e0b' : '#8b98a5' }}
+                                                            />
+                                                        </td>;
+                                                        if (col.id === 'unitLabor') return <td key={col.id} style={tdS}>
+                                                            <input type="text" inputMode="decimal"
+                                                                value={editingPkgItemLabor[eKey] !== undefined ? editingPkgItemLabor[eKey] : (item.laborHrsPerUnit || 0)}
+                                                                onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) setEditingPkgItemLabor(prev => ({ ...prev, [eKey]: e.target.value })); }}
+                                                                onBlur={() => blurPkgItemLabor(itemIdx)}
+                                                                onFocus={e => { focusPkgItemLabor(itemIdx, item.laborHrsPerUnit); e.target.select(); }}
+                                                                style={{ ...inpS, width: compactMode ? '55px' : '65px', textAlign: 'right', color: item._hasLaborOverride ? '#f59e0b' : '#8b98a5' }}
+                                                            />
+                                                        </td>;
                                                         if (col.id === 'extCost') return <td key={col.id} style={{ ...tdS, color: '#00ba7c' }}>{fmtCost((item.qty || 0) * (item.unitCost || 0))}</td>;
                                                         if (col.id === 'extLabor' || col.id === 'labor') return <td key={col.id} style={tdS}>{fmtHrs((item.qty || 0) * (item.laborHrsPerUnit || 0))}</td>;
                                                         return <td key={col.id} style={tdS}></td>;
                                                     })}
                                                 </tr>
-                                            ))}
+                                                );
+                                            })}
                                         </React.Fragment>
                                     );
                                 })}
@@ -1150,8 +1225,17 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                     style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#1d9bf0' }}
                                     onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
                                     onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                                    onClick={() => { onAddToCatalog(location.items[contextMenu.itemIdx]); setContextMenu(null); }}>
+                                    onClick={() => { onAddToCatalog(location.items[contextMenu.itemIdx], location.id, contextMenu.itemIdx); setContextMenu(null); }}>
                                     <Icons.Database /> Add to Catalog
+                                </button>
+                            )}
+                            {onUpdateFromCatalog && !location.items[contextMenu.itemIdx]?.isPlaceholder && (
+                                <button
+                                    style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#1d9bf0' }}
+                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                    onClick={() => { onUpdateFromCatalog(location.items[contextMenu.itemIdx], location.id, contextMenu.itemIdx); setContextMenu(null); }}>
+                                    <Icons.Sync /> Update from Catalog
                                 </button>
                             )}
                             <button

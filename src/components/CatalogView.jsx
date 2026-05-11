@@ -23,11 +23,11 @@ const CATALOG_COLUMNS = [
     { id: 'phase', label: 'Phase', width: 90 },
     { id: 'discontinued', label: 'Discontinued', width: 100 },
     { id: 'catalogNote', label: 'Note', width: 160 },
-    { id: 'favorite', label: '\u2605', width: 40 },
     { id: 'actions', label: 'Actions', width: 80, fixed: true },
 ];
 
-export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog, onSaveCatalog, syncStatus, catalogDirty, compactMode }) {
+export default function CatalogView({ catalog, onUpsertItem, onDeleteItem, onBulkUpsert, onBulkDelete, onRefreshCatalog, syncStatus, compactMode, uomOptions, onUpdateUomOptions }) {
+    const effectiveUomOptions = uomOptions && uomOptions.length > 0 ? uomOptions : UOM_OPTIONS;
     const [search, setSearch] = useState('');
     const [categoryFilter, setCategoryFilter] = useState('');
     const [showAddItem, setShowAddItem] = useState(false);
@@ -46,9 +46,12 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
 
     const { columns: catalogCols, startResize: startCatResize, savedLayouts: catLayouts, saveLayout: saveCatLayout, loadLayout: loadCatLayout, deleteLayout: deleteCatLayout, resetColumns: resetCatColumns } = useFlexibleColumns(CATALOG_COLUMNS, 'catalog');
 
-    // Inline edit handler - updates a single field on a catalog item
+    // Inline edit handler — updates a single field on a catalog item and
+    // auto-saves to Supabase via the parent's upsert handler.
     const updateCatalogField = (itemId, field, value) => {
-        onUpdateCatalog(catalog.map(c => c.id === itemId ? { ...c, [field]: value, modifiedAt: new Date().toISOString() } : c));
+        const item = catalog.find(c => c.id === itemId);
+        if (!item) return;
+        onUpsertItem({ ...item, [field]: value });
     };
 
     // Compact styles
@@ -104,17 +107,11 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
     };
 
     const handleSave = (item) => {
-        const exists = catalog.find(c => c.id === item.id);
-        if (exists) {
-            onUpdateCatalog(catalog.map(c => c.id === item.id ? item : c));
-        } else {
-            onUpdateCatalog([...catalog, item]);
-        }
+        onUpsertItem(item);
     };
 
     const handleDelete = (item) => {
-        // Mark as deleted rather than removing (for sync purposes)
-        onUpdateCatalog(catalog.map(c => c.id === item.id ? { ...c, deleted: true, modifiedAt: new Date().toISOString() } : c));
+        onDeleteItem(item.id);
         setConfirmDelete(null);
     };
 
@@ -172,7 +169,7 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
         { key: 'subcategory', label: 'Subcategory', type: 'text' },
         { key: 'unitCost', label: 'Unit Cost', type: 'number' },
         { key: 'laborHrsPerUnit', label: 'Labor Hours', type: 'number' },
-        { key: 'uom', label: 'UOM', type: 'select', options: UOM_OPTIONS },
+        { key: 'uom', label: 'UOM', type: 'select', options: effectiveUomOptions },
         { key: 'vendor', label: 'Vendor', type: 'text' },
         { key: 'phase', label: 'Phase', type: 'select', options: ['', ...PHASE_OPTIONS.map(p => p.label)] },
         { key: 'discontinued', label: 'Discontinued', type: 'boolean' },
@@ -185,20 +182,17 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
         let val = bulkEditValue;
         if (field.type === 'number') val = parseFloat(val) || 0;
         if (field.type === 'boolean') val = val === 'true' || val === true;
-        const now = new Date().toISOString();
-        onUpdateCatalog(catalog.map(c =>
-            selectedIds.has(c.id) ? { ...c, [bulkEditField]: val, modifiedAt: now } : c
-        ));
+        const modified = catalog
+            .filter(c => selectedIds.has(c.id))
+            .map(c => ({ ...c, [bulkEditField]: val }));
+        onBulkUpsert(modified);
         setBulkEditField(null);
         setBulkEditValue('');
     };
 
     // Bulk delete
     const bulkDelete = () => {
-        const now = new Date().toISOString();
-        onUpdateCatalog(catalog.map(c =>
-            selectedIds.has(c.id) ? { ...c, deleted: true, modifiedAt: now } : c
-        ));
+        onBulkDelete(Array.from(selectedIds));
         setSelectedIds(new Set());
         setContextMenu(null);
     };
@@ -209,18 +203,19 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
     };
 
     return (
-        <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: catalogDirty ? '8px' : '24px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', minHeight: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{ margin: 0, fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <Icons.Database /> Component Catalog
                     <span style={styles.badge('blue')}>{filtered.length} items</span>
                 </h2>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     {syncStatus && (
-                        <span style={{ fontSize: '12px', color: syncStatus === 'synced' ? '#00ba7c' : syncStatus === 'offline' || syncStatus === 'local' ? '#f59e0b' : '#8b98a5', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span style={{ fontSize: '12px', color: syncStatus === 'synced' ? '#00ba7c' : syncStatus === 'error' ? '#f59e0b' : '#8b98a5', display: 'flex', alignItems: 'center', gap: '4px' }}>
                             {syncStatus === 'synced' ? <><Icons.Cloud /> Synced</> :
-                             syncStatus === 'offline' || syncStatus === 'local' ? <><Icons.CloudOff /> Local</> :
-                             syncStatus === 'loading' ? <><Icons.Sync /> Loading...</> :
+                             syncStatus === 'saving' ? <><Icons.Sync /> Saving…</> :
+                             syncStatus === 'loading' ? <><Icons.Sync /> Loading…</> :
+                             syncStatus === 'error' ? <><Icons.CloudOff /> Save failed</> :
                              <><Icons.Sync /> {syncStatus}</>}
                         </span>
                     )}
@@ -240,19 +235,8 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
                     </button>
                 </div>
             </div>
-            {catalogDirty && (
-                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px' }}>
-                    <button
-                        style={{ ...styles.button('primary'), padding: '10px 32px', fontSize: '15px', fontWeight: '700', animation: 'pulse 2s infinite', boxShadow: '0 0 16px rgba(29,155,240,0.5)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
-                        onClick={onSaveCatalog}
-                    >
-                        <Icons.Save /> Save Changes
-                    </button>
-                </div>
-            )}
-
-            <div style={styles.card}>
-                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+            <div style={{ ...styles.card, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexShrink: 0 }}>
                     <input
                         type="text"
                         placeholder="Search components..."
@@ -270,7 +254,7 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
                     </select>
                 </div>
 
-                <div style={{ maxHeight: '60vh', overflowY: 'auto', overflowX: 'auto' }}>
+                <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', minHeight: 0 }}>
                     <table style={styles.table}>
                         <colgroup>
                             {catalogCols.map(col => <col key={col.id} style={{ width: col.width }} />)}
@@ -304,8 +288,6 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
                                         switch (col.id) {
                                             case 'checkbox':
                                                 return <td key={col.id} style={{ ...tdStyle, textAlign: 'center' }}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={e => toggleSelect(item.id, e)} /></td>;
-                                            case 'favorite':
-                                                return <td key={col.id} style={{ ...tdStyle, textAlign: 'center', cursor: 'pointer', color: item.favorite ? '#f59e0b' : '#4a5568' }} onClick={() => updateCatalogField(item.id, 'favorite', !item.favorite)}><Icons.Star filled={!!item.favorite} /></td>;
                                             case 'manufacturer':
                                                 return <td key={col.id} style={tdStyle}>{editMode ? <input type="text" value={item.manufacturer} onChange={e => updateCatalogField(item.id, 'manufacturer', e.target.value)} style={inlineInput} /> : item.manufacturer}</td>;
                                             case 'model':
@@ -323,7 +305,7 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
                                             case 'laborHrsPerUnit':
                                                 return <td key={col.id} style={tdStyle}>{editMode ? <input type="number" step="0.25" min="0" value={item.laborHrsPerUnit || 0} onChange={e => updateCatalogField(item.id, 'laborHrsPerUnit', parseFloat(e.target.value) || 0)} style={{ ...inlineInput, textAlign: 'right' }} /> : (item.laborHrsPerUnit + 'h')}</td>;
                                             case 'uom':
-                                                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px', color: '#8b98a5' }}>{editMode ? <select value={item.uom || 'EA'} onChange={e => updateCatalogField(item.id, 'uom', e.target.value)} style={{ ...inlineInput, cursor: 'pointer' }}>{UOM_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}</select> : (item.uom || 'EA')}</td>;
+                                                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px', color: '#8b98a5' }}>{editMode ? <select value={item.uom || 'EA'} onChange={e => updateCatalogField(item.id, 'uom', e.target.value)} style={{ ...inlineInput, cursor: 'pointer' }}>{item.uom && !effectiveUomOptions.includes(item.uom) && <option value={item.uom}>{item.uom}</option>}{effectiveUomOptions.map(u => <option key={u} value={u}>{u}</option>)}</select> : (item.uom || 'EA')}</td>;
                                             case 'vendor':
                                                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '10px' : '11px' }}>{editMode ? <input type="text" value={item.vendor || ''} onChange={e => updateCatalogField(item.id, 'vendor', e.target.value)} style={inlineInput} /> : (item.vendor || '')}</td>;
                                             case 'phase':
@@ -358,6 +340,8 @@ export default function CatalogView({ catalog, onUpdateCatalog, onRefreshCatalog
                     onSave={handleSave}
                     categories={catalog}
                     catalog={catalog}
+                    uomOptions={effectiveUomOptions}
+                    onUpdateUomOptions={onUpdateUomOptions}
                 />
             )}
 

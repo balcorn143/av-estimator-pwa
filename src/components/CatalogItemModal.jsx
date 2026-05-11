@@ -5,8 +5,11 @@ import { Icons } from '../icons';
 import { fmtCost } from '../utils/formatters';
 import { UOM_OPTIONS, PHASE_OPTIONS } from '../constants';
 import { generateCatalogId } from '../utils/catalog';
+import UomManagerModal from './UomManagerModal';
 
-export default function CatalogItemModal({ item, onClose, onSave, categories, catalog }) {
+export default function CatalogItemModal({ item, onClose, onSave, categories, catalog, uomOptions, onUpdateUomOptions }) {
+    const [showUomManager, setShowUomManager] = useState(false);
+    const effectiveUomOptions = uomOptions && uomOptions.length > 0 ? uomOptions : UOM_OPTIONS;
     const [form, setForm] = useState({
         manufacturer: item?.manufacturer || '',
         model: item?.model || '',
@@ -81,7 +84,7 @@ export default function CatalogItemModal({ item, onClose, onSave, categories, ca
         <div style={styles.modal} onClick={onClose}>
             <div style={{ ...styles.modalContent, width: '700px' }} onClick={e => e.stopPropagation()}>
                 <h2 style={{ margin: '0 0 20px 0', fontSize: '20px', fontWeight: '700' }}>
-                    {item ? 'Edit Catalog Item' : 'Add New Catalog Item'}
+                    {item?.id ? 'Edit Catalog Item' : 'Add New Catalog Item'}
                 </h2>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
@@ -150,9 +153,24 @@ export default function CatalogItemModal({ item, onClose, onSave, categories, ca
                         <input type="number" value={form.laborHrsPerUnit} onChange={e => setForm({ ...form, laborHrsPerUnit: parseFloat(e.target.value) || 0 })} onFocus={e => e.target.select()} style={inputStyle} min="0" step="0.25" />
                     </div>
                     <div>
-                        <label style={labelStyle}>Unit of Measure</label>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <label style={{ ...labelStyle, marginBottom: 0 }}>Unit of Measure</label>
+                            {onUpdateUomOptions && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowUomManager(true)}
+                                    style={{ background: 'transparent', border: 'none', color: '#1d9bf0', fontSize: '11px', cursor: 'pointer', padding: 0 }}>
+                                    Manage…
+                                </button>
+                            )}
+                        </div>
                         <select value={form.uom} onChange={e => setForm({ ...form, uom: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
-                            {UOM_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                            {/* If the item's current UOM isn't in the active list (e.g. a legacy value),
+                                still show it so the user can see what was stored. */}
+                            {form.uom && !effectiveUomOptions.includes(form.uom) && (
+                                <option value={form.uom}>{form.uom}</option>
+                            )}
+                            {effectiveUomOptions.map(u => <option key={u} value={u}>{u}</option>)}
                         </select>
                     </div>
                     <div>
@@ -260,10 +278,17 @@ export default function CatalogItemModal({ item, onClose, onSave, categories, ca
                         disabled={!form.manufacturer.trim() || !form.model.trim()}
                         onClick={handleSubmit}
                     >
-                        {item ? 'Save Changes' : 'Add to Catalog'}
+                        {item?.id ? 'Save Changes' : 'Add to Catalog'}
                     </button>
                 </div>
             </div>
+            {showUomManager && (
+                <UomManagerModal
+                    uomOptions={effectiveUomOptions}
+                    onSave={(next) => { onUpdateUomOptions(next); }}
+                    onClose={() => setShowUomManager(false)}
+                />
+            )}
         </div>
     );
 }

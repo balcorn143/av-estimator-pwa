@@ -3,11 +3,13 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React
 import { CONFIG, supabase, getDataUrl, APP_VERSION } from './config'
 import { styles } from './styles'
 import { Icons } from './icons'
-import { DEFAULT_CATALOG, UOM_OPTIONS, SYSTEM_OPTIONS, PHASE_OPTIONS, PROJECT_STATUSES, DEFAULT_COLUMNS, CATALOG_COLUMNS } from './constants'
+import { UOM_OPTIONS, SYSTEM_OPTIONS, PHASE_OPTIONS, PROJECT_STATUSES, DEFAULT_COLUMNS, CATALOG_COLUMNS } from './constants'
 import { fmtCost, fmtQty, fmtHrs, formatCurrency, formatHours } from './utils/formatters'
 import { parseLocationInput, getLocationPath, getAllLocationsFlatted, getLocationsWithItems, getHierarchyLevels, getGroupedByHierarchy, cloneStructure, sortLocationsAlpha, filterLocations } from './utils/locations'
-import { generateCatalogId, calculateTotals, itemMatchesSearch } from './utils/catalog'
-import { generatePackageId, resolvePackageInstance, findAllPackageInstances, getFlattenedItems, migrateProjectPackages, migratePackageDefinitions } from './utils/packages'
+import { generateCatalogId, calculateTotals, itemMatchesSearch, migrateCatalogPhases, migrateProjectPhases, migratePackagePhases } from './utils/catalog'
+import { loadCatalog as loadCatalogFromDb, upsertItem as upsertCatalogItemRemote, deleteItem as deleteCatalogItemRemote, bulkUpsert as bulkUpsertCatalogRemote, bulkDelete as bulkDeleteCatalogRemote, rowToItem as catalogRowToItem } from './utils/catalogStore'
+import { runMigration } from './utils/migration'
+import { generatePackageId, resolvePackageInstance, findAllPackageInstances, getFlattenedItems } from './utils/packages'
 import { generateEsticomWorkbook, generateProcoreEstimateWorkbook } from './utils/export'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
@@ -34,6 +36,7 @@ import ConvertToAccessoryModal from './components/ConvertToAccessoryModal'
 import AddAccessoryModal from './components/AddAccessoryModal'
 import LoginScreen from './components/LoginScreen'
 import CatalogView from './components/CatalogView'
+import CatalogItemModal from './components/CatalogItemModal'
 import PackagesView from './components/PackagesView'
 import CatalogConflictModal from './components/CatalogConflictModal'
 import LaborByPhaseReport from './components/LaborByPhaseReport'
@@ -58,9 +61,12 @@ export default function App() {
         return () => subscription.unsubscribe();
     }, []);
 
-    // Fetch team membership on login
+    // Fetch team membership on login. `teamLoaded` flips true once the query
+    // resolves (with or without a team) so dependent effects know they can run.
+    const [teamLoaded, setTeamLoaded] = useState(false);
     useEffect(() => {
-        if (!supabase || !session) { setTeam(null); return; }
+        if (!supabase || !session) { setTeam(null); setTeamLoaded(false); return; }
+        setTeamLoaded(false);
         const fetchTeam = async () => {
             try {
                 const { data: membership } = await supabase
@@ -81,6 +87,8 @@ export default function App() {
                 }
             } catch (e) {
                 // No team membership — that's fine
+            } finally {
+                setTeamLoaded(true);
             }
         };
         fetchTeam();
@@ -112,117 +120,138 @@ export default function App() {
     const [editPackageId, setEditPackageId] = useState(null);
     const [catalog, setCatalog] = useState([]);
     const [catalogSyncStatus, setCatalogSyncStatus] = useState('loading');
-    const [catalogDirty, setCatalogDirty] = useState(false);
     const [catalogConflicts, setCatalogConflicts] = useState(null);
+    const [catalogError, setCatalogError] = useState(null);
+    const [uomOptions, setUomOptions] = useState(UOM_OPTIONS);
     const [packages, setPackages] = useState([]);
     
-    // Load catalog on mount. If first-time (no localStorage) and team becomes available, reload to get Supabase customizations.
-    const catalogInitializedRef = React.useRef(false);
-    const catalogVersionRefreshed = React.useRef(false);
+    // Catalog is server-authoritative. The DB (catalog_items) is the only source
+    // of truth. On every (session, team) resolution we:
+    //   1) Run the one-time migration (push any local-only data up to Supabase),
+    //   2) Fetch the canonical catalog from Supabase.
+    // No localStorage primary, no version-bump refetch, no delta merge.
     useEffect(() => {
-        loadCatalogData();
-    }, []);
-    useEffect(() => {
-        // When team becomes available, reload catalog only if it hasn't been initialized from localStorage
-        // (i.e., first-time setup where we need Supabase customizations)
-        if (team && !catalogInitializedRef.current) {
-            loadCatalogData();
-        }
-    }, [team]);
-    
-    // Helper to apply team customizations (edits, deletions, favorites, notes) to base catalog
-    const applyCatalogCustomizations = (baseCatalog, customizations) => {
-        if (!customizations?.length) return baseCatalog;
-        const customMap = {};
-        customizations.forEach(c => { customMap[c.catalog_item_id] = c; });
-        return baseCatalog.map(item => {
-            const custom = customMap[item.id];
-            if (custom) {
-                let merged = { ...item, favorite: custom.favorite, catalogNote: custom.catalog_note, deleted: !!custom.deleted };
-                if (custom.custom_fields) {
-                    try {
-                        const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
-                        // Base catalog JSON is the source of truth for categories.
-                        // Always strip category/subcategory from Supabase customizations
-                        // to prevent stale pre-consolidation values from leaking back in.
-                        delete fields.category;
-                        delete fields.subcategory;
-                        merged = { ...merged, ...fields };
-                    } catch (e) { console.error('Failed to parse custom_fields', e); }
-                }
-                return merged;
-            }
-            return item;
-        });
-    };
-
-    const loadCatalogData = async () => {
-        // localStorage is the primary source of truth for the catalog.
-        // On first ever load (no localStorage), build from av_catalog.json + Supabase.
-        // On subsequent loads (browser refresh), just use localStorage directly.
-        // Use the in-app refresh button to pull latest from Supabase.
-        // If CATALOG_VERSION changes (av_catalog.json was updated), force re-fetch.
-        const savedVersion = localStorage.getItem('av-estimator-catalog-version');
-        const versionMatch = savedVersion && parseInt(savedVersion) === CONFIG.CATALOG_VERSION;
-        const saved = localStorage.getItem('av-estimator-catalog');
-        if (saved && versionMatch) {
+        if (!session || !teamLoaded) return;
+        let cancelled = false;
+        const run = async () => {
+            setCatalogError(null);
+            setCatalogSyncStatus('loading');
             try {
-                const localCatalog = JSON.parse(saved);
-                if (localCatalog?.length > 0) {
-                    setCatalog(localCatalog);
-                    setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
-                    setCatalogDirty(false);
-                    catalogInitializedRef.current = true;
+                await runMigration({ teamId: team?.id, userId: session.user.id });
+                if (cancelled) return;
+                if (!team) {
+                    // No team → no shared catalog. UI surfaces a "join a team" gate.
+                    setCatalog([]);
+                    setCatalogSyncStatus('no-team');
                     return;
                 }
-            } catch (e) {}
-        }
-        if (!versionMatch) {
-            console.log('Catalog version changed — re-fetching base catalog');
-            catalogVersionRefreshed.current = true;
-        }
-
-        // First-time load: build catalog from base JSON + Supabase customizations
-        setCatalogSyncStatus('syncing');
-        let result = null;
-        try {
-            const response = await fetch(getDataUrl(CONFIG.CATALOG_FILE));
-            if (response.ok) {
-                result = await response.json();
-            }
-        } catch (e) {
-            console.log('Failed to fetch base catalog');
-        }
-
-        if (!result) {
-            result = DEFAULT_CATALOG;
-            setCatalog(result);
-            setCatalogSyncStatus('offline');
-            setCatalogDirty(false);
-            return;
-        }
-
-        // Apply team customizations from Supabase if available
-        if (supabase && session && team) {
-            try {
-                const { data: customizations, error } = await supabase
-                    .from('catalog_customizations')
-                    .select('*')
-                    .eq('team_id', team.id)
-                    .limit(5000);
-                if (!error && customizations?.length > 0) {
-                    result = applyCatalogCustomizations(result, customizations);
-                }
+                const items = await loadCatalogFromDb(team.id);
+                if (cancelled) return;
+                setCatalog(migrateCatalogPhases(items));
+                setCatalogSyncStatus('synced');
             } catch (e) {
-                console.log('Failed to load team customizations');
+                if (cancelled) return;
+                console.error('Failed to load catalog', e);
+                setCatalogError(e?.message || 'Failed to load catalog');
+                setCatalogSyncStatus('error');
             }
-        }
+        };
+        run();
+        return () => { cancelled = true; };
+    }, [session, team, teamLoaded]);
 
-        setCatalog(result);
-        localStorage.setItem('av-estimator-catalog', JSON.stringify(result));
-        localStorage.setItem('av-estimator-catalog-version', String(CONFIG.CATALOG_VERSION));
-        setCatalogSyncStatus(supabase && session ? 'synced' : 'local');
-        setCatalogDirty(false);
+    // Subscribe to realtime catalog_items changes for the active team. Teammates'
+    // INSERT/UPDATE/DELETE events apply directly to local state, so other windows
+    // see new items / edits / deletions without a refresh. Echoes of this client's
+    // own writes are idempotent — they just replace local state with the canonical
+    // DB row, which is structurally equivalent to what's already there.
+    useEffect(() => {
+        if (!supabase || !session || !team) return;
+        const applyChange = (payload) => {
+            const { eventType, new: newRow, old: oldRow } = payload;
+            if (eventType === 'DELETE') {
+                const id = oldRow?.item_id;
+                if (!id) return;
+                setCatalog(prev => prev.filter(c => c.id !== id));
+                return;
+            }
+            if (!newRow) return;
+            const item = catalogRowToItem(newRow);
+            setCatalog(prev => {
+                const exists = prev.some(c => c.id === item.id);
+                if (item.deleted) return exists ? prev.filter(c => c.id !== item.id) : prev;
+                if (!exists) return [...prev, item];
+                return prev.map(c => (c.id === item.id ? item : c));
+            });
+        };
+        const channel = supabase
+            .channel(`catalog_items:${team.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'catalog_items',
+                filter: `team_id=eq.${team.id}`,
+            }, applyChange)
+            .subscribe();
+        return () => { supabase.removeChannel(channel); };
+    }, [session, team]);
+
+    // Manual refresh button — re-pull the canonical catalog from Supabase.
+    const refreshCatalog = async () => {
+        if (!session) return;
+        if (!team) { showToast('Join a team to use the catalog'); return; }
+        setCatalogError(null);
+        setCatalogSyncStatus('loading');
+        try {
+            const items = await loadCatalogFromDb(team.id);
+            setCatalog(migrateCatalogPhases(items));
+            setCatalogSyncStatus('synced');
+            showToast('Catalog refreshed');
+        } catch (e) {
+            console.error('Refresh failed', e);
+            setCatalogError(e?.message || 'Refresh failed');
+            setCatalogSyncStatus('error');
+            showToast('Could not refresh catalog');
+        }
+    };
+
+    // Renders the right panel depending on auth/team/load state.
+    // Used at both catalog render sites (dashboard + project tab) so they
+    // surface the same loading/error/no-team gates uniformly.
+    const renderCatalogPanel = () => {
+        if (catalogSyncStatus === 'no-team') {
+            return (
+                <div style={styles.emptyState}>
+                    <p style={{ marginBottom: '16px' }}>Join or create a team to use the catalog.</p>
+                    <button style={{ ...styles.smallButton, backgroundColor: '#1d9bf0', color: '#fff' }} onClick={() => setShowTeamModal(true)}>Team Settings</button>
+                </div>
+            );
+        }
+        if (catalogSyncStatus === 'loading' && catalog.length === 0) {
+            return <div style={styles.emptyState}>Loading catalog…</div>;
+        }
+        if (catalogSyncStatus === 'error') {
+            return (
+                <div style={styles.emptyState}>
+                    <p style={{ marginBottom: '16px' }}>Couldn't load catalog{catalogError ? `: ${catalogError}` : ''}.</p>
+                    <button style={{ ...styles.smallButton, backgroundColor: '#1d9bf0', color: '#fff' }} onClick={refreshCatalog}>Retry</button>
+                </div>
+            );
+        }
+        return (
+            <CatalogView
+                catalog={catalog}
+                onUpsertItem={upsertCatalogItem}
+                onDeleteItem={deleteCatalogItem}
+                onBulkUpsert={bulkUpsertCatalog}
+                onBulkDelete={bulkDeleteCatalog}
+                onRefreshCatalog={refreshCatalog}
+                syncStatus={catalogSyncStatus}
+                compactMode={compactMode}
+                uomOptions={uomOptions}
+                onUpdateUomOptions={setUomOptions}
+            />
+        );
     };
     
     // Seed packages from static JSON — only used for first-time setup when no data exists anywhere
@@ -240,76 +269,6 @@ export default function App() {
             console.log('Failed to fetch seed packages');
         }
         return false;
-    };
-    
-    // Refresh catalog: pull coworker changes from Supabase and merge with local catalog.
-    // localStorage/in-memory catalog is the base; Supabase customizations with newer timestamps win.
-    const refreshCatalog = async () => {
-        if (!supabase || !session || !team) {
-            showToast('Catalog is up to date (local only)');
-            return;
-        }
-        setCatalogSyncStatus('syncing');
-        try {
-            // Build a map of current local catalog for merging
-            const localMap = {};
-            catalog.forEach(c => { localMap[c.id] = c; });
-
-            // Fetch team customizations from Supabase
-            const { data: customizations, error } = await supabase
-                .from('catalog_customizations')
-                .select('*')
-                .eq('team_id', team.id)
-                .limit(5000);
-
-            if (error) {
-                console.error('Refresh error:', error);
-                setCatalogSyncStatus('offline');
-                showToast('Could not refresh catalog');
-                return;
-            }
-
-            if (customizations?.length > 0) {
-                // Apply Supabase customizations, but only if they're newer than local edits
-                let updatedCount = 0;
-                customizations.forEach(custom => {
-                    const local = localMap[custom.catalog_item_id];
-                    if (!local) return;
-                    const localTime = local.modifiedAt ? new Date(local.modifiedAt).getTime() : 0;
-                    const remoteTime = custom.updated_at ? new Date(custom.updated_at).getTime() : 0;
-                    // Remote is newer — apply Supabase customization over local
-                    if (remoteTime > localTime) {
-                        let merged = { ...local, favorite: custom.favorite, catalogNote: custom.catalog_note, deleted: !!custom.deleted };
-                        if (custom.custom_fields) {
-                            try {
-                                const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
-                                merged = { ...merged, ...fields };
-                            } catch (e) {}
-                        }
-                        // Preserve the remote timestamp as modifiedAt so future refreshes know
-                        merged.modifiedAt = custom.updated_at;
-                        localMap[custom.catalog_item_id] = merged;
-                        updatedCount++;
-                    }
-                });
-                if (updatedCount > 0) {
-                    const updated = catalog.map(c => localMap[c.id] || c);
-                    setCatalog(updated);
-                    localStorage.setItem('av-estimator-catalog', JSON.stringify(updated));
-                    showToast(`Catalog refreshed: ${updatedCount} item${updatedCount !== 1 ? 's' : ''} updated from team`);
-                } else {
-                    showToast('Catalog is up to date');
-                }
-            } else {
-                showToast('Catalog is up to date');
-            }
-            setCatalogSyncStatus('synced');
-            setCatalogDirty(false);
-        } catch (e) {
-            console.error('Refresh error:', e);
-            setCatalogSyncStatus('offline');
-            showToast('Could not refresh catalog');
-        }
     };
     
     const [selected, setSelected] = useState(null);
@@ -829,73 +788,97 @@ export default function App() {
         return { cost, labor, items };
     };
 
-    // Wrapper to update catalog + sync full catalog to Supabase for teams
-    const catalogSyncTimer = React.useRef(null);
-    const updateCatalog = (newCatalog) => {
-        const updated = typeof newCatalog === 'function' ? newCatalog(catalog) : newCatalog;
-        setCatalog(updated);
-        setCatalogDirty(true);
-        // Immediately save to localStorage so a page refresh won't lose changes
-        localStorage.setItem('av-estimator-catalog', JSON.stringify(updated));
+    // Auto-save catalog mutations. Pattern for each: optimistic local state update,
+    // immediate Supabase write, revert + toast on error. The "Save Changes" button
+    // is gone — every per-action mutation persists itself.
+    const requireTeam = () => {
+        if (!session) return false;
+        if (!team) { showToast('Join a team to use the catalog', 'warning'); return false; }
+        return true;
     };
 
-    const saveCatalog = async () => {
-        // Save to localStorage immediately
-        localStorage.setItem('av-estimator-catalog', JSON.stringify(catalog));
-
-        // Sync to Supabase if on a team
-        if (supabase && session && team) {
-            setCatalogSyncStatus('syncing');
-            try {
-                const modified = catalog.filter(c => c.modifiedAt || c.favorite || c.catalogNote || c.deleted);
-                if (modified.length > 0) {
-                    const customizations = modified.map(c => ({
-                        team_id: team.id,
-                        catalog_item_id: c.id,
-                        favorite: !!c.favorite,
-                        catalog_note: c.catalogNote || '',
-                        deleted: !!c.deleted,
-                        custom_fields: JSON.stringify({
-                            manufacturer: c.manufacturer,
-                            model: c.model,
-                            partNumber: c.partNumber,
-                            description: c.description,
-                            // category/subcategory intentionally omitted — base catalog JSON is the source of truth
-                            unitCost: c.unitCost,
-                            laborHrsPerUnit: c.laborHrsPerUnit,
-                            uom: c.uom,
-                            vendor: c.vendor,
-                            phase: c.phase || '',
-                            discontinued: !!c.discontinued,
-                        }),
-                        updated_at: new Date().toISOString(),
-                    }));
-                    const { error: upsertError } = await supabase.from('catalog_customizations').upsert(customizations, { onConflict: 'team_id,catalog_item_id' });
-                    if (upsertError) {
-                        console.error('Catalog upsert error:', upsertError);
-                    }
-                }
-                // Don't reload from Supabase after save — our in-memory catalog is the source of truth.
-                // Reloading was causing deleted items to repopulate when the Supabase columns
-                // weren't set up or the round-trip hadn't completed yet.
-                // Coworkers will get updates when they open/refresh the catalog via loadCatalogData.
-                setCatalogSyncStatus('synced');
-            } catch (e) {
-                console.error('Catalog sync error:', e);
-                setCatalogSyncStatus('offline');
-            }
+    const upsertCatalogItem = async (item) => {
+        if (!requireTeam()) return;
+        const stamped = { ...item, modifiedAt: new Date().toISOString() };
+        const prev = catalog;
+        const exists = prev.some(c => c.id === stamped.id);
+        const next = exists
+            ? prev.map(c => (c.id === stamped.id ? stamped : c))
+            : [...prev, stamped];
+        setCatalog(next);
+        setCatalogSyncStatus('saving');
+        try {
+            await upsertCatalogItemRemote(team.id, stamped, session.user.id);
+            setCatalogSyncStatus('synced');
+        } catch (e) {
+            console.error('Catalog upsert failed', e);
+            setCatalog(prev);
+            setCatalogSyncStatus('error');
+            showToast('Could not save change — try again', 'warning');
         }
-        setCatalogDirty(false);
-        showToast('Catalog saved');
     };
 
-    // Auto-save to localStorage + Supabase sync (skip until initial load completes)
+    const deleteCatalogItem = async (itemId) => {
+        if (!requireTeam()) return;
+        const prev = catalog;
+        setCatalog(prev.map(c => (c.id === itemId ? { ...c, deleted: true } : c)));
+        setCatalogSyncStatus('saving');
+        try {
+            await deleteCatalogItemRemote(team.id, itemId, session.user.id);
+            setCatalogSyncStatus('synced');
+        } catch (e) {
+            console.error('Catalog delete failed', e);
+            setCatalog(prev);
+            setCatalogSyncStatus('error');
+            showToast('Could not delete — try again', 'warning');
+        }
+    };
+
+    const bulkUpsertCatalog = async (items) => {
+        if (!requireTeam()) return;
+        if (!items?.length) return;
+        const now = new Date().toISOString();
+        const stamped = items.map(i => ({ ...i, modifiedAt: now }));
+        const idMap = {};
+        stamped.forEach(i => { idMap[i.id] = i; });
+        const prev = catalog;
+        const existingIds = new Set(prev.map(c => c.id));
+        const next = prev.map(c => idMap[c.id] || c);
+        stamped.forEach(i => { if (!existingIds.has(i.id)) next.push(i); });
+        setCatalog(next);
+        setCatalogSyncStatus('saving');
+        try {
+            await bulkUpsertCatalogRemote(team.id, stamped, session.user.id);
+            setCatalogSyncStatus('synced');
+        } catch (e) {
+            console.error('Catalog bulk upsert failed', e);
+            setCatalog(prev);
+            setCatalogSyncStatus('error');
+            showToast('Could not save changes — try again', 'warning');
+        }
+    };
+
+    const bulkDeleteCatalog = async (itemIds) => {
+        if (!requireTeam()) return;
+        if (!itemIds?.length) return;
+        const idSet = new Set(itemIds);
+        const prev = catalog;
+        setCatalog(prev.map(c => (idSet.has(c.id) ? { ...c, deleted: true } : c)));
+        setCatalogSyncStatus('saving');
+        try {
+            await bulkDeleteCatalogRemote(team.id, itemIds, session.user.id);
+            setCatalogSyncStatus('synced');
+        } catch (e) {
+            console.error('Catalog bulk delete failed', e);
+            setCatalog(prev);
+            setCatalogSyncStatus('error');
+            showToast('Could not delete — try again', 'warning');
+        }
+    };
+
+    // Debounced auto-save to Supabase (skip until initial load completes).
     useEffect(() => {
         if (!hasLoaded.current) return;
-        const data = { projects, packages, templates, activeProjectId, viewingRevisionId: viewingRevisionId || undefined, revisionReadOnly: (projectReadOnly && !checkedOutBy) || undefined };
-        localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
-
-        // Debounced sync to Supabase
         if (supabase && session) {
             clearTimeout(syncTimer.current);
             syncTimer.current = setTimeout(async () => {
@@ -912,12 +895,13 @@ export default function App() {
                         });
                         if (error) throw error;
                     }
-                    // Sync packages/templates
+                    // Sync packages/templates/uom_options
                     await supabase.from('user_settings').upsert({
                         user_id: session.user.id,
                         team_id: team?.id || null,
                         packages,
                         templates,
+                        uom_options: uomOptions,
                         updated_at: new Date().toISOString(),
                     });
                     setSyncStatus('synced');
@@ -927,34 +911,12 @@ export default function App() {
                 }
             }, 500);
         }
-    }, [projects, packages, templates, activeProjectId, viewingRevisionId, projectReadOnly, team]);
+    }, [projects, packages, templates, uomOptions, activeProjectId, viewingRevisionId, projectReadOnly, team]);
 
-    // Flush pending saves before tab/window close
-    useEffect(() => {
-        const handleBeforeUnload = () => {
-            if (!hasLoaded.current) return;
-            const data = { projects, packages, templates, activeProjectId, viewingRevisionId: viewingRevisionId || undefined, revisionReadOnly: (projectReadOnly && !checkedOutBy) || undefined };
-            localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
-            // Use sendBeacon for reliable Supabase sync on close
-            if (supabase && session) {
-                clearTimeout(syncTimer.current);
-            }
-        };
-        window.addEventListener('beforeunload', handleBeforeUnload);
-        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-    }, [projects, packages, templates, activeProjectId, viewingRevisionId, projectReadOnly]);
-
-    // Manual save — flush localStorage + immediate Supabase sync (Ctrl+S / Save button)
+    // Manual save (Ctrl+S / Save button) — immediate Supabase sync.
     const saveNow = React.useCallback(async () => {
         if (!hasLoaded.current) return;
-        // 1. Save to localStorage immediately
-        const data = { projects, packages, templates, activeProjectId, viewingRevisionId: viewingRevisionId || undefined, revisionReadOnly: (projectReadOnly && !checkedOutBy) || undefined };
-        localStorage.setItem('av-estimator-data-v2', JSON.stringify(data));
-
-        // 2. Cancel any pending debounced sync
         clearTimeout(syncTimer.current);
-
-        // 3. Immediate Supabase sync
         if (supabase && session) {
             setSyncStatus('syncing');
             try {
@@ -973,6 +935,7 @@ export default function App() {
                     team_id: team?.id || null,
                     packages,
                     templates,
+                    uom_options: uomOptions,
                     updated_at: new Date().toISOString(),
                 });
                 setSyncStatus('synced');
@@ -980,91 +943,18 @@ export default function App() {
             } catch (err) {
                 console.error('Save error:', err);
                 setSyncStatus('error');
-                showToast('Saved locally (sync failed)');
+                showToast('Save failed — check your connection');
             }
         } else {
-            showToast('Project saved locally');
+            showToast('Sign in to save');
         }
-    }, [projects, packages, templates, activeProjectId, team, supabase, session]);
+    }, [projects, packages, templates, uomOptions, team, supabase, session]);
 
-    // Save catalog to localStorage when it changes
+    // Server-authoritative load of projects/packages/templates. Runs once
+    // session + team query both resolve. Sets `hasLoaded.current = true` only
+    // after a successful load so the auto-save effect doesn't fire empty state.
     useEffect(() => {
-        localStorage.setItem('av-estimator-catalog', JSON.stringify(catalog));
-    }, [catalog]);
-    
-    // Load from localStorage on mount
-    useEffect(() => {
-        const saved = localStorage.getItem('av-estimator-data-v2');
-        if (saved) {
-            try {
-                const data = JSON.parse(saved);
-                // Migrate old statuses to new ones
-                const statusMap = { bidding: 'developing', won: 'active', 'in-progress': 'active' };
-                const migratedProjects = (data.projects || []).map(p =>
-                    statusMap[p.status] ? { ...p, status: statusMap[p.status] } : p
-                );
-                if (migratedProjects.length > 0) {
-                    setProjects(migratedProjects);
-                }
-                if (data.activeProjectId) {
-                    setActiveProjectId(data.activeProjectId);
-                    setShowProjectsHome(false);
-                    if (data.viewingRevisionId) {
-                        setViewingRevisionId(data.viewingRevisionId);
-                    }
-                    if (data.revisionReadOnly) {
-                        setProjectReadOnly(true);
-                    }
-                }
-                // Migrate package definitions to new format
-                let loadedPackages = data.packages?.length > 0 ? migratePackageDefinitions(data.packages) : [];
-                if (loadedPackages.length > 0) setPackages(loadedPackages);
-
-                // Migrate old packageName items to package instances
-                let allNewDefs = [];
-                const pkgMigratedProjects = migratedProjects.map(p => {
-                    const { project: mp, newPackageDefs } = migrateProjectPackages(p, [...loadedPackages, ...allNewDefs]);
-                    allNewDefs = [...allNewDefs, ...newPackageDefs];
-                    return mp;
-                });
-                if (allNewDefs.length > 0) {
-                    loadedPackages = [...loadedPackages, ...allNewDefs];
-                    setPackages(loadedPackages);
-                }
-                if (pkgMigratedProjects.some((p, i) => p !== migratedProjects[i])) {
-                    setProjects(pkgMigratedProjects);
-                }
-
-                if (data.templates) setTemplates(data.templates);
-            } catch (e) { console.error('Failed to load saved data', e); }
-        } else {
-            // Migrate from old single-project format
-            const oldSaved = localStorage.getItem('av-estimator-data');
-            if (oldSaved) {
-                try {
-                    const oldData = JSON.parse(oldSaved);
-                    if (oldData.project?.locations?.length > 0) {
-                        const migratedProject = {
-                            ...oldData.project,
-                            id: Date.now().toString(),
-                            status: 'developing',
-                            client: '',
-                            createdAt: new Date().toISOString(),
-                            updatedAt: new Date().toISOString(),
-                        };
-                        setProjects([migratedProject]);
-                    }
-                    if (oldData.packages?.length > 0) setPackages(oldData.packages);
-                    if (oldData.templates) setTemplates(oldData.templates);
-                } catch (e) { console.error('Failed to migrate old data'); }
-            }
-        }
-        hasLoaded.current = true;
-    }, []);
-
-    // Sync with Supabase after login — Supabase is the single source of truth
-    useEffect(() => {
-        if (!supabase || !session || !hasLoaded.current) return;
+        if (!supabase || !session || !teamLoaded) return;
         const syncFromSupabase = async () => {
             setSyncStatus('syncing');
             try {
@@ -1077,7 +967,7 @@ export default function App() {
                 }
                 const { data: remoteRows, error: projErr } = await projQuery;
                 if (!projErr && remoteRows?.length > 0) {
-                    const remote = remoteRows.map(r => r.data);
+                    const remote = migrateProjectPhases(remoteRows.map(r => r.data));
                     // Supabase is authoritative: start with remote, add any local-only projects
                     setProjects(prev => {
                         const remoteIds = new Set(remote.map(p => p.id));
@@ -1086,8 +976,8 @@ export default function App() {
                     });
                 }
 
-                // Pull remote packages/templates — Supabase is authoritative
-                let settQuery = supabase.from('user_settings').select('packages, templates');
+                // Pull remote packages/templates/uom_options — Supabase is authoritative
+                let settQuery = supabase.from('user_settings').select('packages, templates, uom_options');
                 if (team) {
                     settQuery = settQuery.eq('team_id', team.id);
                 } else {
@@ -1097,7 +987,7 @@ export default function App() {
                 if (settings) {
                     if (settings.packages?.length > 0) {
                         // Supabase packages are the source of truth — replace local
-                        setPackages(settings.packages);
+                        setPackages(migratePackagePhases(settings.packages));
                     } else {
                         // Supabase has no packages — seed from static file if local is also empty
                         setPackages(prev => {
@@ -1106,6 +996,9 @@ export default function App() {
                         });
                     }
                     if (settings.templates && Object.keys(settings.templates).length > 0) setTemplates(settings.templates);
+                    if (Array.isArray(settings.uom_options) && settings.uom_options.length > 0) {
+                        setUomOptions(settings.uom_options);
+                    }
                 } else {
                     // No user_settings row at all — first time user, seed packages
                     setPackages(prev => {
@@ -1114,47 +1007,17 @@ export default function App() {
                     });
                 }
 
-                // Pull catalog customizations if on a team (includes edits, deletions, favorites, notes)
-                if (team) {
-                    const { data: customizations } = await supabase
-                        .from('catalog_customizations')
-                        .select('*')
-                        .eq('team_id', team.id)
-                        .limit(5000);
-                    if (customizations?.length > 0) {
-                        setCatalog(prev => {
-                            const customMap = {};
-                            customizations.forEach(c => { customMap[c.catalog_item_id] = c; });
-                            return prev.map(item => {
-                                const custom = customMap[item.id];
-                                if (custom) {
-                                    let merged = { ...item, favorite: custom.favorite, catalogNote: custom.catalog_note, deleted: !!custom.deleted };
-                                    // Apply full field overrides if custom_fields exists
-                                    if (custom.custom_fields) {
-                                        try {
-                                            const fields = typeof custom.custom_fields === 'string' ? JSON.parse(custom.custom_fields) : custom.custom_fields;
-                                            // Base catalog JSON is the source of truth for categories
-                                            delete fields.category; delete fields.subcategory;
-                                            merged = { ...merged, ...fields };
-                                        } catch (e) { console.error('Failed to parse custom_fields', e); }
-                                    }
-                                    return merged;
-                                }
-                                return item;
-                            });
-                        });
-                    }
-                }
-
+                // Catalog has its own server-authoritative load effect (see catalog_items).
                 setSyncStatus('synced');
+                hasLoaded.current = true;
             } catch (err) {
                 console.error('Supabase sync error:', err);
                 setSyncStatus('error');
-                showToast('Failed to sync with server — working from local cache', 'warning');
+                showToast('Could not reach server — refresh to retry', 'warning');
             }
         };
         syncFromSupabase();
-    }, [session, team]);
+    }, [session, team, teamLoaded]);
 
     // Save to history for undo
     useEffect(() => {
@@ -2062,40 +1925,90 @@ export default function App() {
         if (loc) updateItems(locationId, [...(loc.items || []), ...clipboard.map(item => ({ ...item, id: Date.now().toString() + Math.random().toString(36).substr(2, 9) }))]);
     };
     
-    // Add item to catalog
-    const handleAddToCatalog = (item) => {
-        // Check if item already exists in catalog (by part number or manufacturer+model)
-        const exists = catalog.find(c => 
+    // "Add to Catalog" from the project right-click menu. Opens the full
+    // catalog-item modal pre-filled with the component's fields so the user
+    // can review/complete the details before persisting.
+    const [addToCatalogContext, setAddToCatalogContext] = useState(null); // { prefill, sourceItem, locationId, itemIdx } | null
+
+    const handleAddToCatalog = (item, locationId, itemIdx) => {
+        const exists = catalog.find(c =>
             (c.partNumber && c.partNumber === item.partNumber) ||
             (c.manufacturer === item.manufacturer && c.model === item.model)
         );
-        
         if (exists && !exists.deleted) {
             showToast('Item already exists in catalog');
             return;
         }
-        
-        const newCatalogItem = {
-            id: generateCatalogId(),
-            manufacturer: item.manufacturer || '',
-            model: item.model || '',
-            partNumber: item.partNumber || '',
-            description: item.description || '',
-            category: item.category || '',
-            subcategory: item.subcategory || '',
-            unitCost: item.unitCost || 0,
-            laborHrsPerUnit: item.laborHrsPerUnit || 0,
-            uom: item.uom || 'EA',
-            vendor: item.vendor || '',
-            discontinued: false,
-            phase: item.phase || '',
-            modifiedAt: new Date().toISOString(),
-        };
-        
-        setCatalog(prev => [...prev, newCatalogItem]);
-        showToast(`Added "${item.manufacturer} ${item.model}" to catalog`);
+        setAddToCatalogContext({
+            prefill: {
+                manufacturer: item.manufacturer || '',
+                model: item.model || '',
+                partNumber: item.partNumber || '',
+                description: item.description || '',
+                category: item.category || '',
+                subcategory: item.subcategory || '',
+                unitCost: item.unitCost || 0,
+                laborHrsPerUnit: item.laborHrsPerUnit || 0,
+                uom: item.uom || 'EA',
+                vendor: item.vendor || '',
+                discontinued: false,
+                phase: item.phase || '',
+            },
+            sourceItem: item,
+            locationId,
+            itemIdx,
+        });
+    };
+
+    // Modal save: persist to Supabase via auto-save, and if the source row
+    // was a placeholder/empty item, replace it with the new catalog version.
+    const handleAddToCatalogSave = (newItem) => {
+        const ctx = addToCatalogContext;
+        upsertCatalogItem(newItem);
+        if (ctx?.sourceItem?.isPlaceholder && ctx.locationId != null && ctx.itemIdx != null) {
+            const loc = findLocation(project.locations, ctx.locationId);
+            if (loc) {
+                const updatedItems = [...loc.items];
+                updatedItems[ctx.itemIdx] = {
+                    ...newItem,
+                    qty: ctx.sourceItem.qty || 1,
+                    notes: ctx.sourceItem.notes || '',
+                    phase: ctx.sourceItem.phase || '',
+                    accessories: ctx.sourceItem.accessories || [],
+                };
+                updateItems(ctx.locationId, updatedItems);
+            }
+        }
+        showToast(`Added "${newItem.manufacturer} ${newItem.model}" to catalog`);
     };
     
+    const handleUpdateFromCatalog = (item, locationId, itemIdx) => {
+        // Find matching catalog entry by id first, then partNumber, then manufacturer+model
+        const catalogItem = catalog.find(c => !c.deleted && (
+            c.id === item.id ||
+            (c.partNumber && item.partNumber && c.partNumber === item.partNumber) ||
+            (c.manufacturer === item.manufacturer && c.model === item.model)
+        ));
+        if (!catalogItem) {
+            showToast('No matching catalog item found');
+            return;
+        }
+        const loc = findLocation(project.locations, locationId);
+        if (!loc) return;
+        const updatedItems = [...loc.items];
+        updatedItems[itemIdx] = {
+            // Preserve project-specific fields
+            qty: item.qty,
+            notes: item.notes || '',
+            phase: item.phase || '',
+            accessories: item.accessories || [],
+            // Overwrite with latest catalog fields
+            ...catalogItem,
+        };
+        updateItems(locationId, updatedItems);
+        showToast(`Updated "${catalogItem.manufacturer} ${catalogItem.model}" from catalog`);
+    };
+
     // Replace item handlers
     const handleReplaceItem = (itemIdx, locationId) => {
         const loc = findLocation(project.locations, locationId || selected?.id);
@@ -2297,15 +2210,7 @@ export default function App() {
                     </header>
                     <main style={{ ...styles.main, padding: '16px 24px' }}>
                         {dashboardCatalogTab === 'components' && (
-                            <CatalogView
-                                catalog={catalog}
-                                onUpdateCatalog={updateCatalog}
-                                onRefreshCatalog={refreshCatalog}
-                                onSaveCatalog={saveCatalog}
-                                syncStatus={catalogSyncStatus}
-                                catalogDirty={catalogDirty}
-                                compactMode={compactMode}
-                            />
+                            renderCatalogPanel()
                         )}
                         {dashboardCatalogTab === 'packages' && (
                             <PackagesView
@@ -2382,6 +2287,17 @@ export default function App() {
                         session={session}
                         onClose={() => setShowTeamModal(false)}
                         onTeamUpdate={(newTeam) => { setTeam(newTeam); if (newTeam) showToast(`Team: ${newTeam.name}`); }}
+                    />
+                )}
+                {addToCatalogContext && (
+                    <CatalogItemModal
+                        item={addToCatalogContext.prefill}
+                        onClose={() => setAddToCatalogContext(null)}
+                        onSave={handleAddToCatalogSave}
+                        categories={catalog}
+                        catalog={catalog}
+                        uomOptions={uomOptions}
+                        onUpdateUomOptions={setUomOptions}
                     />
                 )}
                 {showCheckoutModal && pendingOpenProjectId && (() => {
@@ -2747,6 +2663,7 @@ export default function App() {
                                         onMoveToPackage={handleMoveToPackage}
                                         compactMode={compactMode}
                                         onAddToCatalog={handleAddToCatalog}
+                                        onUpdateFromCatalog={handleUpdateFromCatalog}
                                         catalogPkgs={packages}
                                         projectPkgs={effectivePackages}
                                         onReplaceItem={(itemIdx) => handleReplaceItem(itemIdx)}
@@ -2813,6 +2730,7 @@ export default function App() {
                                     }}
                                     compactMode={compactMode}
                                     onAddToCatalog={handleAddToCatalog}
+                                    onUpdateFromCatalog={handleUpdateFromCatalog}
                                     catalogPkgs={packages}
                                     projectPkgs={effectivePackages}
                                     filterMode={viewMode === 'unfinished' ? 'unfinished' : undefined}
@@ -2827,21 +2745,17 @@ export default function App() {
                 )}
 
                 {tab === 'catalog' && (
-                    <section style={{ ...styles.content, marginLeft: 0 }}>
-                        <nav style={{ display: 'flex', gap: '4px', marginBottom: '16px' }}>
+                    <section style={{
+                        ...styles.content,
+                        marginLeft: 0,
+                        ...(projectCatalogTab === 'components' ? { display: 'flex', flexDirection: 'column', overflow: 'hidden' } : {}),
+                    }}>
+                        <nav style={{ display: 'flex', gap: '4px', marginBottom: '16px', flexShrink: 0 }}>
                             <button style={styles.navButton(projectCatalogTab === 'components')} onClick={() => setProjectCatalogTab('components')}>Components</button>
                             <button style={styles.navButton(projectCatalogTab === 'packages')} onClick={() => setProjectCatalogTab('packages')}>Packages ({packages.length + (effectivePackages || []).length})</button>
                         </nav>
                         {projectCatalogTab === 'components' && (
-                            <CatalogView
-                                catalog={catalog}
-                                onUpdateCatalog={updateCatalog}
-                                onRefreshCatalog={refreshCatalog}
-                                onSaveCatalog={saveCatalog}
-                                syncStatus={catalogSyncStatus}
-                                catalogDirty={catalogDirty}
-                                compactMode={compactMode}
-                            />
+                            renderCatalogPanel()
                         )}
                         {projectCatalogTab === 'packages' && (
                             <PackagesView
@@ -3070,6 +2984,18 @@ export default function App() {
             </main>
 
             {showSearch && <SearchModal catalog={catalog} packages={packages} projectPackages={project.packages || []} onClose={() => { setShowSearch(false); setReplaceContext(null); }} onInsert={replaceContext ? (items) => handleReplaceSelect(items[0]) : checkDiscontinuedAndInsert} onInsertPkg={replaceContext?.isPackage ? (pkg) => handleReplaceSelect(pkg) : insertPkg} replaceMode={!!replaceContext} replaceIsPackage={replaceContext?.isPackage} readOnly={projectReadOnly || isViewingHistory} onReadOnlyBlock={() => isProjectEditable()} />}
+
+            {addToCatalogContext && (
+                <CatalogItemModal
+                    item={addToCatalogContext.prefill}
+                    onClose={() => setAddToCatalogContext(null)}
+                    onSave={handleAddToCatalogSave}
+                    categories={catalog}
+                    catalog={catalog}
+                    uomOptions={uomOptions}
+                    onUpdateUomOptions={setUomOptions}
+                />
+            )}
 
             {/* Replace Confirmation Modal */}
             {showReplaceConfirm && (

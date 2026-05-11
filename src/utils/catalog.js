@@ -3,6 +3,65 @@ import { resolvePackageInstance } from './packages';
 // Generate unique catalog ID
 export const generateCatalogId = () => 'cat-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
 
+// Phase migration: normalize legacy <CODE>--<DESC> format to <DESC> <CODE>
+const PHASE_CODE_MAP = {
+    '27-40 00': 'Management 27-41 16',
+    '27-41 00': 'Rough-In 27-41 00',
+    '27-41 16': 'Management 27-41 16',
+    '27-41 17': 'Programming 27-41 17',
+    '27-41 23': 'Trim Out 27-41 23',
+    '27-41 33': 'Finish 27-41 33',
+};
+
+export function migratePhase(phase) {
+    if (!phase) return phase;
+    // Already canonical — skip
+    const canonical = Object.values(PHASE_CODE_MAP);
+    if (canonical.includes(phase)) return phase;
+    // Extract any CSI code (e.g. "27-41 33") from anywhere in the string
+    const codeMatch = phase.match(/\b(\d{2}-\d{2} \d{2})\b/);
+    if (codeMatch && PHASE_CODE_MAP[codeMatch[1]]) return PHASE_CODE_MAP[codeMatch[1]];
+    return phase;
+}
+
+export function migrateCatalogPhases(catalog) {
+    return catalog.map(item => item.phase ? { ...item, phase: migratePhase(item.phase) } : item);
+}
+
+export function migratePackagePhases(packages) {
+    return (packages || []).map(pkg => ({
+        ...pkg,
+        items: (pkg.items || []).map(item => ({
+            ...item,
+            phase: migratePhase(item.phase),
+            ...(item.accessories?.length ? { accessories: item.accessories.map(a => ({ ...a, phase: migratePhase(a.phase) })) } : {}),
+        })),
+    }));
+}
+
+export function migrateProjectPhases(projects) {
+    const migrateItem = (item) => {
+        const out = { ...item, phase: migratePhase(item.phase) };
+        if (out.accessories?.length) out.accessories = out.accessories.map(a => ({ ...a, phase: migratePhase(a.phase) }));
+        if (out.itemOverrides) {
+            const ov = {};
+            Object.entries(out.itemOverrides).forEach(([k, v]) => { ov[k] = v.phase !== undefined ? { ...v, phase: migratePhase(v.phase) } : v; });
+            out.itemOverrides = ov;
+        }
+        return out;
+    };
+    const migrateLocs = (locs) => (locs || []).map(loc => ({
+        ...loc,
+        items: (loc.items || []).map(migrateItem),
+        children: loc.children ? migrateLocs(loc.children) : loc.children,
+    }));
+    return (projects || []).map(p => ({
+        ...p,
+        locations: migrateLocs(p.locations),
+        packages: migratePackagePhases(p.packages),
+    }));
+}
+
 export function calculateTotals(location, catalogPkgs, projectPkgs) {
     let cost = 0, labor = 0, itemCount = 0;
     if (location.items) {

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'av-estimator-v50';
+const CACHE_NAME = 'av-estimator-1.1';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -46,7 +46,13 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // For HTML and JSON files, always try network first (to get latest code/data)
+  // The app is online-only — never cache data JSON files. They're used only for
+  // first-time team seeding and must reflect the latest server state.
+  if (url.pathname.endsWith('av_catalog.json') || url.pathname.endsWith('av_packages.json')) {
+    return;
+  }
+
+  // For HTML and other JSON files (manifest), always try network first.
   if (url.pathname.endsWith('.html') || url.pathname.endsWith('.json') || url.pathname.endsWith('/')) {
     event.respondWith(
       fetch(event.request)

@@ -39,11 +39,11 @@ export const DEFAULT_CATALOG = [
 export const UOM_OPTIONS = ['EA', 'FT', 'M', 'PR', 'SET', 'BOX', 'ROLL', 'LOT'];
 export const SYSTEM_OPTIONS = ['Audio', 'Video', 'Control', 'Infrastructure'];
 export const PHASE_OPTIONS = [
-    { value: '27-41 00', label: 'Rough-In 27-41 00' },
-    { value: '27-41 23', label: 'Trim Out 27-41 23' },
-    { value: '27-41 33', label: 'Finish 27-41 33' },
-    { value: '27-41 16', label: 'Management 27-41 16' },
-    { value: '27-41 17', label: 'Programming 27-41 17' },
+    { value: 'Rough-In 27-41 00', label: 'Rough-In 27-41 00' },
+    { value: 'Trim Out 27-41 23', label: 'Trim Out 27-41 23' },
+    { value: 'Finish 27-41 33', label: 'Finish 27-41 33' },
+    { value: 'Management 27-41 16', label: 'Management 27-41 16' },
+    { value: 'Programming 27-41 17', label: 'Programming 27-41 17' },
 ];
 
 export const PROJECT_STATUSES = {
@@ -85,7 +85,6 @@ export const CATALOG_COLUMNS = [
     { id: 'phase', label: 'Phase', width: 90 },
     { id: 'discontinued', label: 'Discontinued', width: 100 },
     { id: 'catalogNote', label: 'Note', width: 160 },
-    { id: 'favorite', label: '\u2605', width: 40 },
     { id: 'actions', label: 'Actions', width: 80, fixed: true },
 ];
 

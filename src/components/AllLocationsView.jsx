@@ -29,6 +29,7 @@ export default function AllLocationsView({
     onCollapseAllLocations,
     compactMode,
     onAddToCatalog,
+    onUpdateFromCatalog,
     catalogPkgs,
     projectPkgs,
     filterMode, // 'unfinished' to show only placeholder items
@@ -1086,8 +1087,17 @@ export default function AllLocationsView({
                                         style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#1d9bf0' }}
                                         onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
                                         onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                                        onClick={() => { onAddToCatalog(item); setContextMenu(null); }}>
+                                        onClick={() => { onAddToCatalog(item, contextMenu.locationId, contextMenu.itemIdx); setContextMenu(null); }}>
                                         <Icons.Database /> Add to Catalog
+                                    </button>
+                                )}
+                                {onUpdateFromCatalog && !item?.isPlaceholder && (
+                                    <button
+                                        style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#1d9bf0' }}
+                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                        onClick={() => { onUpdateFromCatalog(item, contextMenu.locationId, contextMenu.itemIdx); setContextMenu(null); }}>
+                                        <Icons.Sync /> Update from Catalog
                                     </button>
                                 )}
                                 <button
