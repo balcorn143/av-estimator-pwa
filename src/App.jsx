@@ -8,6 +8,8 @@ import { fmtCost, fmtQty, fmtHrs, formatCurrency, formatHours } from './utils/fo
 import { parseLocationInput, getLocationPath, getAllLocationsFlatted, getLocationsWithItems, getHierarchyLevels, getGroupedByHierarchy, cloneStructure, sortLocationsAlpha, filterLocations } from './utils/locations'
 import { generateCatalogId, calculateTotals, itemMatchesSearch, migrateCatalogPhases, migrateProjectPhases, migratePackagePhases } from './utils/catalog'
 import { loadCatalog as loadCatalogFromDb, upsertItem as upsertCatalogItemRemote, deleteItem as deleteCatalogItemRemote, bulkUpsert as bulkUpsertCatalogRemote, bulkDelete as bulkDeleteCatalogRemote, rowToItem as catalogRowToItem } from './utils/catalogStore'
+import { loadPackages as loadPackagesFromDb, upsertPackage as upsertPackageRemote, deletePackage as deletePackageRemote, bulkUpsertPackages as bulkUpsertPackagesRemote, rowToPackage as packageRowToPackage } from './utils/packagesStore'
+import { loadTeamSettings, upsertTeamSettings } from './utils/teamSettingsStore'
 import { generatePackageId, resolvePackageInstance, findAllPackageInstances, getFlattenedItems } from './utils/packages'
 import { generateEsticomWorkbook, generateProcoreEstimateWorkbook } from './utils/export'
 import * as XLSX from 'xlsx'
@@ -191,6 +193,136 @@ export default function App() {
         return () => { supabase.removeChannel(channel); };
     }, [session, team]);
 
+    // Server-authoritative load of team_packages. Mirrors the catalog_items
+    // load — one row per package, fetched fresh on every (session, team)
+    // resolution. Replaces the broken user_settings.packages JSON blob whose
+    // per-user storage produced duplicate rows + silent overwrites.
+    useEffect(() => {
+        if (!session || !teamLoaded) return;
+        let cancelled = false;
+        const run = async () => {
+            setPackagesSyncStatus('loading');
+            try {
+                if (!team) {
+                    setPackages([]);
+                    packagesLoadedRef.current = true;
+                    setPackagesSyncStatus('no-team');
+                    return;
+                }
+                const pkgs = await loadPackagesFromDb(team.id);
+                if (cancelled) return;
+                setPackages(migratePackagePhases(pkgs));
+                packagesLoadedRef.current = true;
+                setPackagesSyncStatus('synced');
+            } catch (e) {
+                if (cancelled) return;
+                console.error('Failed to load team_packages', e);
+                setPackagesSyncStatus('error');
+            }
+        };
+        run();
+        return () => { cancelled = true; };
+    }, [session, team, teamLoaded]);
+
+    // Realtime: teammates' INSERT/UPDATE/DELETE on team_packages reflect
+    // immediately in local state. Echoes of this client's own writes are
+    // idempotent — they replace local state with the canonical DB row.
+    useEffect(() => {
+        if (!supabase || !session || !team) return;
+        const applyChange = (payload) => {
+            const { eventType, new: newRow, old: oldRow } = payload;
+            if (eventType === 'DELETE') {
+                const id = oldRow?.package_id;
+                if (!id) return;
+                setPackages(prev => prev.filter(p => p.id !== id));
+                return;
+            }
+            if (!newRow) return;
+            const pkg = packageRowToPackage(newRow);
+            setPackages(prev => {
+                const exists = prev.some(p => p.id === pkg.id);
+                if (pkg.deleted) return exists ? prev.filter(p => p.id !== pkg.id) : prev;
+                if (!exists) return [...prev, pkg];
+                return prev.map(p => (p.id === pkg.id ? pkg : p));
+            });
+        };
+        const channel = supabase
+            .channel(`team_packages:${team.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'team_packages',
+                filter: `team_id=eq.${team.id}`,
+            }, applyChange)
+            .subscribe();
+        return () => { supabase.removeChannel(channel); };
+    }, [session, team]);
+
+    // Load team_settings (templates + uom_options). Replaces the broken
+    // user_settings JSON-blob storage. One row per team — no race.
+    useEffect(() => {
+        if (!session || !teamLoaded) return;
+        let cancelled = false;
+        const run = async () => {
+            try {
+                if (!team) {
+                    teamSettingsLoadedRef.current = true;
+                    return;
+                }
+                const settings = await loadTeamSettings(team.id);
+                if (cancelled) return;
+                if (settings) {
+                    if (Array.isArray(settings.templates) || (settings.templates && typeof settings.templates === 'object')) {
+                        setTemplates(settings.templates);
+                    }
+                    if (Array.isArray(settings.uomOptions) && settings.uomOptions.length > 0) {
+                        setUomOptions(settings.uomOptions);
+                    }
+                    lastSyncedSettingsRef.current = JSON.stringify({
+                        templates: settings.templates,
+                        uomOptions: settings.uomOptions,
+                    });
+                }
+                teamSettingsLoadedRef.current = true;
+            } catch (e) {
+                if (cancelled) return;
+                console.error('Failed to load team_settings', e);
+                teamSettingsLoadedRef.current = true;
+            }
+        };
+        run();
+        return () => { cancelled = true; };
+    }, [session, team, teamLoaded]);
+
+    // Realtime: teammates updating templates/uom_options reflect locally.
+    useEffect(() => {
+        if (!supabase || !session || !team) return;
+        const applyChange = (payload) => {
+            const row = payload.new;
+            if (!row) return;
+            if (Array.isArray(row.templates) || (row.templates && typeof row.templates === 'object')) {
+                setTemplates(row.templates);
+            }
+            if (Array.isArray(row.uom_options) && row.uom_options.length > 0) {
+                setUomOptions(row.uom_options);
+            }
+            lastSyncedSettingsRef.current = JSON.stringify({
+                templates: row.templates,
+                uomOptions: row.uom_options,
+            });
+        };
+        const channel = supabase
+            .channel(`team_settings:${team.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'team_settings',
+                filter: `team_id=eq.${team.id}`,
+            }, applyChange)
+            .subscribe();
+        return () => { supabase.removeChannel(channel); };
+    }, [session, team]);
+
     // Manual refresh button — re-pull the canonical catalog from Supabase.
     const refreshCatalog = async () => {
         if (!session) return;
@@ -249,23 +381,24 @@ export default function App() {
         );
     };
     
-    // Seed packages from static JSON — only used for first-time setup when no data exists anywhere
-    const seedPackagesFromStatic = async () => {
-        try {
-            const response = await fetch(getDataUrl(CONFIG.PACKAGES_FILE));
-            if (response.ok) {
-                const data = await response.json();
-                if (data?.length > 0) {
-                    setPackages(data);
-                    return true;
-                }
-            }
-        } catch (e) {
-            console.log('Failed to fetch seed packages');
-        }
-        return false;
-    };
-    
+    // Packages live in their own server-authoritative table (team_packages),
+    // not user_settings. See the team_packages load effect below.
+    const [packagesSyncStatus, setPackagesSyncStatus] = useState('loading');
+    const packagesLoadedRef = React.useRef(false);
+    const teamSettingsLoadedRef = React.useRef(false);
+    const teamSettingsSaveTimer = React.useRef(null);
+    // Tracks the last value we either loaded from or wrote to team_settings.
+    // Used to short-circuit the save effect so realtime echoes of our own
+    // writes do not trigger a save loop.
+    const lastSyncedSettingsRef = React.useRef('');
+
+    // Per-project updatedAt that we know is in sync with Supabase. Used by
+    // the project auto-save effect to skip writing projects that haven't been
+    // modified locally — otherwise loading would clobber teammates' fresh
+    // edits with our stale copy of their projects.
+    const lastSavedProjectVersionsRef = React.useRef(new Map());
+
+
     const [selected, setSelected] = useState(null);
     const [viewMode, setViewMode] = useState('single'); // 'single', 'all', or 'unfinished'
     const [workspaceSearch, setWorkspaceSearch] = useState(''); // Filter items in workspace views
@@ -871,16 +1004,110 @@ export default function App() {
         }
     };
 
-    // Debounced auto-save to Supabase (skip until initial load completes).
+    // Catalog-package mutations. Same pattern as catalog items: optimistic
+    // local update, immediate Supabase write to team_packages, revert on error.
+    const upsertCatalogPackage = async (pkg) => {
+        if (!requireTeam()) return;
+        if (!pkg?.id) return;
+        const stamped = { ...pkg, scope: 'catalog', updatedAt: new Date().toISOString() };
+        const prev = packages;
+        const exists = prev.some(p => p.id === stamped.id);
+        const next = exists
+            ? prev.map(p => (p.id === stamped.id ? stamped : p))
+            : [...prev, stamped];
+        setPackages(next);
+        setPackagesSyncStatus('saving');
+        try {
+            await upsertPackageRemote(team.id, stamped, session.user.id);
+            setPackagesSyncStatus('synced');
+        } catch (e) {
+            console.error('Package upsert failed', e);
+            setPackages(prev);
+            setPackagesSyncStatus('error');
+            showToast('Could not save package — try again', 'warning');
+        }
+    };
+
+    const deleteCatalogPackage = async (pkgId) => {
+        if (!requireTeam()) return;
+        if (!pkgId) return;
+        const prev = packages;
+        setPackages(prev.filter(p => p.id !== pkgId));
+        setPackagesSyncStatus('saving');
+        try {
+            await deletePackageRemote(team.id, pkgId);
+            setPackagesSyncStatus('synced');
+        } catch (e) {
+            console.error('Package delete failed', e);
+            setPackages(prev);
+            setPackagesSyncStatus('error');
+            showToast('Could not delete package — try again', 'warning');
+        }
+    };
+
+    const bulkUpsertCatalogPackages = async (pkgs) => {
+        if (!requireTeam()) return;
+        if (!pkgs?.length) return;
+        const now = new Date().toISOString();
+        const stamped = pkgs.map(p => ({ ...p, scope: 'catalog', updatedAt: now }));
+        const idMap = {};
+        stamped.forEach(p => { idMap[p.id] = p; });
+        const prev = packages;
+        const existingIds = new Set(prev.map(p => p.id));
+        const next = prev.map(p => idMap[p.id] || p);
+        stamped.forEach(p => { if (!existingIds.has(p.id)) next.push(p); });
+        setPackages(next);
+        setPackagesSyncStatus('saving');
+        try {
+            await bulkUpsertPackagesRemote(team.id, stamped, session.user.id);
+            setPackagesSyncStatus('synced');
+        } catch (e) {
+            console.error('Bulk package upsert failed', e);
+            setPackages(prev);
+            setPackagesSyncStatus('error');
+            showToast('Could not save package changes — try again', 'warning');
+        }
+    };
+
+    // Debounced save of team_settings (templates + uom_options). Skips writes
+    // until the initial load resolves AND when state matches the last value we
+    // synced — that second guard breaks the realtime-echo loop.
+    useEffect(() => {
+        if (!supabase || !session || !team) return;
+        if (!teamSettingsLoadedRef.current) return;
+        const key = JSON.stringify({ templates, uomOptions });
+        if (key === lastSyncedSettingsRef.current) return;
+        clearTimeout(teamSettingsSaveTimer.current);
+        teamSettingsSaveTimer.current = setTimeout(() => {
+            upsertTeamSettings({ templates, uomOptions }, { teamId: team.id, userId: session.user.id })
+                .then(() => { lastSyncedSettingsRef.current = key; })
+                .catch(err => console.error('team_settings save failed', err));
+        }, 500);
+        return () => clearTimeout(teamSettingsSaveTimer.current);
+    }, [templates, uomOptions, team, session]);
+
+    // Debounced auto-save of projects only. Packages/templates/uom_options
+    // now persist through their own dedicated stores (team_packages,
+    // team_settings) — never bundled into a per-user JSON row that races.
+    //
+    // Critical: only write projects whose local updatedAt differs from the
+    // version we last loaded/saved. Otherwise loading remote projects would
+    // immediately push that same data back, overwriting any newer edits a
+    // teammate made between our load and our save.
     useEffect(() => {
         if (!hasLoaded.current) return;
         if (supabase && session) {
             clearTimeout(syncTimer.current);
             syncTimer.current = setTimeout(async () => {
+                const dirty = projects.filter(p => {
+                    if (!p?.id) return false;
+                    const lastSaved = lastSavedProjectVersionsRef.current.get(p.id);
+                    return lastSaved === undefined || lastSaved !== p.updatedAt;
+                });
+                if (dirty.length === 0) return;
                 setSyncStatus('syncing');
                 try {
-                    // Upsert each project
-                    for (const p of projects) {
+                    for (const p of dirty) {
                         const { error } = await supabase.from('projects').upsert({
                             id: p.id,
                             user_id: session.user.id,
@@ -889,16 +1116,8 @@ export default function App() {
                             updated_at: p.updatedAt || new Date().toISOString(),
                         });
                         if (error) throw error;
+                        lastSavedProjectVersionsRef.current.set(p.id, p.updatedAt || '');
                     }
-                    // Sync packages/templates/uom_options
-                    await supabase.from('user_settings').upsert({
-                        user_id: session.user.id,
-                        team_id: team?.id || null,
-                        packages,
-                        templates,
-                        uom_options: uomOptions,
-                        updated_at: new Date().toISOString(),
-                    });
                     setSyncStatus('synced');
                 } catch (err) {
                     console.error('Sync error:', err);
@@ -906,16 +1125,23 @@ export default function App() {
                 }
             }, 500);
         }
-    }, [projects, packages, templates, uomOptions, activeProjectId, viewingRevisionId, projectReadOnly, team]);
+    }, [projects, activeProjectId, viewingRevisionId, projectReadOnly, team]);
 
-    // Manual save (Ctrl+S / Save button) — immediate Supabase sync.
+    // Manual save (Ctrl+S / Save button) — immediate project sync. Packages
+    // are already persisted per-action; templates/uom_options through their
+    // own debounced save above.
     const saveNow = React.useCallback(async () => {
         if (!hasLoaded.current) return;
         clearTimeout(syncTimer.current);
         if (supabase && session) {
             setSyncStatus('syncing');
             try {
-                for (const p of projects) {
+                const dirty = projects.filter(p => {
+                    if (!p?.id) return false;
+                    const lastSaved = lastSavedProjectVersionsRef.current.get(p.id);
+                    return lastSaved === undefined || lastSaved !== p.updatedAt;
+                });
+                for (const p of dirty) {
                     const { error } = await supabase.from('projects').upsert({
                         id: p.id,
                         user_id: session.user.id,
@@ -924,15 +1150,14 @@ export default function App() {
                         updated_at: p.updatedAt || new Date().toISOString(),
                     });
                     if (error) throw error;
+                    lastSavedProjectVersionsRef.current.set(p.id, p.updatedAt || '');
                 }
-                await supabase.from('user_settings').upsert({
-                    user_id: session.user.id,
-                    team_id: team?.id || null,
-                    packages,
-                    templates,
-                    uom_options: uomOptions,
-                    updated_at: new Date().toISOString(),
-                });
+                if (team) {
+                    clearTimeout(teamSettingsSaveTimer.current);
+                    try {
+                        await upsertTeamSettings({ templates, uomOptions }, { teamId: team.id, userId: session.user.id });
+                    } catch (e) { console.error('team_settings save failed', e); }
+                }
                 setSyncStatus('synced');
                 showToast('Project saved ✓');
             } catch (err) {
@@ -943,17 +1168,21 @@ export default function App() {
         } else {
             showToast('Sign in to save');
         }
-    }, [projects, packages, templates, uomOptions, team, supabase, session]);
+    }, [projects, templates, uomOptions, team, supabase, session]);
 
-    // Server-authoritative load of projects/packages/templates. Runs once
-    // session + team query both resolve. Sets `hasLoaded.current = true` only
-    // after a successful load so the auto-save effect doesn't fire empty state.
+    // Server-authoritative load of projects. Catalog, packages, templates,
+    // and uom_options each have their own dedicated load effects above —
+    // they no longer ride on the user_settings JSON blob that caused the
+    // duplicate-row data-loss bug.
     useEffect(() => {
         if (!supabase || !session || !teamLoaded) return;
         const syncFromSupabase = async () => {
             setSyncStatus('syncing');
+            // Discard any stale per-project versions from a prior session/team
+            // so we don't accidentally skip a save for a project the new user
+            // legitimately changed.
+            lastSavedProjectVersionsRef.current = new Map();
             try {
-                // Pull remote projects — Supabase wins
                 let projQuery = supabase.from('projects').select('id, data, updated_at');
                 if (team) {
                     projQuery = projQuery.eq('team_id', team.id);
@@ -963,46 +1192,18 @@ export default function App() {
                 const { data: remoteRows, error: projErr } = await projQuery;
                 if (!projErr && remoteRows?.length > 0) {
                     const remote = migrateProjectPhases(remoteRows.map(r => r.data));
-                    // Supabase is authoritative: start with remote, add any local-only projects
+                    // Record the loaded version of each project so the save
+                    // effect treats them as in-sync (it only writes projects
+                    // whose updatedAt changes after this point).
+                    remote.forEach(p => {
+                        if (p?.id) lastSavedProjectVersionsRef.current.set(p.id, p.updatedAt || '');
+                    });
                     setProjects(prev => {
                         const remoteIds = new Set(remote.map(p => p.id));
                         const localOnly = prev.filter(p => !remoteIds.has(p.id));
                         return [...remote, ...localOnly];
                     });
                 }
-
-                // Pull remote packages/templates/uom_options — Supabase is authoritative
-                let settQuery = supabase.from('user_settings').select('packages, templates, uom_options');
-                if (team) {
-                    settQuery = settQuery.eq('team_id', team.id);
-                } else {
-                    settQuery = settQuery.eq('user_id', session.user.id);
-                }
-                const { data: settings } = await settQuery.maybeSingle();
-                if (settings) {
-                    if (settings.packages?.length > 0) {
-                        // Supabase packages are the source of truth — replace local
-                        setPackages(migratePackagePhases(settings.packages));
-                    } else {
-                        // Supabase has no packages — seed from static file if local is also empty
-                        setPackages(prev => {
-                            if (prev.length === 0) { seedPackagesFromStatic(); }
-                            return prev;
-                        });
-                    }
-                    if (settings.templates && Object.keys(settings.templates).length > 0) setTemplates(settings.templates);
-                    if (Array.isArray(settings.uom_options) && settings.uom_options.length > 0) {
-                        setUomOptions(settings.uom_options);
-                    }
-                } else {
-                    // No user_settings row at all — first time user, seed packages
-                    setPackages(prev => {
-                        if (prev.length === 0) { seedPackagesFromStatic(); }
-                        return prev;
-                    });
-                }
-
-                // Catalog has its own server-authoritative load effect (see catalog_items).
                 setSyncStatus('synced');
                 hasLoaded.current = true;
             } catch (err) {
@@ -1336,7 +1537,18 @@ export default function App() {
             }),
         }));
         if (!isProjectEditable()) return;
-        setPackages(prev => updatePkgItems(prev));
+        // Only push the catalog packages that actually changed (one or more
+        // items inside matched partKey). Diffing avoids no-op writes.
+        const changedCatalogPkgs = packages
+            .map(pkg => {
+                const updated = updatePkgItems([pkg])[0];
+                return updated !== pkg && JSON.stringify(updated.items) !== JSON.stringify(pkg.items)
+                    ? updated : null;
+            })
+            .filter(Boolean);
+        if (changedCatalogPkgs.length > 0) {
+            bulkUpsertCatalogPackages(changedCatalogPkgs);
+        }
         setProject(p => ({
             ...p,
             locations: updateLocs(p.locations),
@@ -1397,7 +1609,16 @@ export default function App() {
                 return updatedItem;
             }),
         }));
-        setPackages(prev => updatePkgItems(prev));
+        const changedCatalogPkgs = packages
+            .map(pkg => {
+                const updated = updatePkgItems([pkg])[0];
+                return updated !== pkg && JSON.stringify(updated.items) !== JSON.stringify(pkg.items)
+                    ? updated : null;
+            })
+            .filter(Boolean);
+        if (changedCatalogPkgs.length > 0) {
+            bulkUpsertCatalogPackages(changedCatalogPkgs);
+        }
         setProject(p => ({
             ...p,
             locations: updateLocs(p.locations, p.packages),
@@ -2107,7 +2328,7 @@ export default function App() {
         };
 
         if (scope === 'catalog') {
-            setPackages(p => [...p, newPkg]);
+            upsertCatalogPackage(newPkg);
         } else {
             setProjectDirect(p => ({
                 ...p,
@@ -2211,7 +2432,8 @@ export default function App() {
                             <PackagesView
                                 catalogPackages={packages}
                                 projectPackages={[]}
-                                onUpdateCatalogPackages={setPackages}
+                                onUpsertCatalogPackage={upsertCatalogPackage}
+                                onDeleteCatalogPackage={deleteCatalogPackage}
                                 onUpdateProjectPackages={() => {}}
                                 catalog={catalog}
                                 locations={[]}
@@ -2756,7 +2978,8 @@ export default function App() {
                             <PackagesView
                                 catalogPackages={packages}
                                 projectPackages={effectivePackages || []}
-                                onUpdateCatalogPackages={setPackages}
+                                onUpsertCatalogPackage={upsertCatalogPackage}
+                                onDeleteCatalogPackage={deleteCatalogPackage}
                                 onUpdateProjectPackages={setProjectDirect}
                                 catalog={catalog}
                                 locations={effectiveLocations || []}
@@ -2765,7 +2988,7 @@ export default function App() {
                         )}
                     </section>
                 )}
-                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={effectivePackages || []} onUpdateCatalogPackages={setPackages} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={effectiveLocations || []} compactMode={compactMode} initialSelectedPkgId={editPackageId} onInitialPkgConsumed={() => setEditPackageId(null)} /></section>}
+                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={effectivePackages || []} onUpsertCatalogPackage={upsertCatalogPackage} onDeleteCatalogPackage={deleteCatalogPackage} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={effectiveLocations || []} compactMode={compactMode} initialSelectedPkgId={editPackageId} onInitialPkgConsumed={() => setEditPackageId(null)} /></section>}
                 {tab === 'reports' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>

@@ -23,7 +23,22 @@ const PKG_COLUMNS = [
     { id: 'remove',       label: '',             width: 36, fixed: true },
 ];
 
-export default function PackagesView({ catalogPackages, projectPackages, onUpdateCatalogPackages, onUpdateProjectPackages, catalog, locations, compactMode, initialSelectedPkgId, onInitialPkgConsumed }) {
+export default function PackagesView({
+    catalogPackages,
+    projectPackages,
+    // New granular handlers — each catalog-package mutation hits Supabase
+    // immediately so two teammates can't race on a JSON-blob upsert.
+    onUpsertCatalogPackage,
+    onDeleteCatalogPackage,
+    // Project packages still live inside projects.data (one editor at a time
+    // via the checkout mechanism), so they keep the functional-setter shape.
+    onUpdateProjectPackages,
+    catalog,
+    locations,
+    compactMode,
+    initialSelectedPkgId,
+    onInitialPkgConsumed,
+}) {
     const [selectedPkgId, setSelectedPkgId] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
     const [newName, setNewName] = useState('');
@@ -91,7 +106,7 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
             items: [],
         };
         if (newScope === 'catalog') {
-            onUpdateCatalogPackages(prev => [...prev, pkg]);
+            onUpsertCatalogPackage(pkg);
         } else {
             onUpdateProjectPackages(prev => ({ ...prev, packages: [...(prev.packages || []), pkg] }));
         }
@@ -103,13 +118,17 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
     const updatePackage = (pkgId, updater) => {
         const pkg = allPackages.find(p => p.id === pkgId);
         if (!pkg) return;
+        const updated = {
+            ...(typeof updater === 'function' ? updater(pkg) : updater),
+            updatedAt: new Date().toISOString(),
+        };
         const scope = pkg.scope === 'project' ? 'project' : 'catalog';
         if (scope === 'catalog') {
-            onUpdateCatalogPackages(prev => prev.map(p => p.id === pkgId ? { ...(typeof updater === 'function' ? updater(p) : updater), updatedAt: new Date().toISOString() } : p));
+            onUpsertCatalogPackage(updated);
         } else {
             onUpdateProjectPackages(prev => ({
                 ...prev,
-                packages: (prev.packages || []).map(p => p.id === pkgId ? { ...(typeof updater === 'function' ? updater(p) : updater), updatedAt: new Date().toISOString() } : p),
+                packages: (prev.packages || []).map(p => p.id === pkgId ? updated : p),
             }));
         }
     };
@@ -120,7 +139,7 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
         if (pkg.scope === 'project') {
             onUpdateProjectPackages(prev => ({ ...prev, packages: (prev.packages || []).filter(p => p.id !== pkgId) }));
         } else {
-            onUpdateCatalogPackages(prev => prev.filter(p => p.id !== pkgId));
+            onDeleteCatalogPackage(pkgId);
         }
         if (selectedPkgId === pkgId) setSelectedPkgId(null);
         setConfirmDelete(null);
@@ -129,7 +148,7 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
     const promoteToCatalog = (pkgId) => {
         const pkg = (projectPackages || []).find(p => p.id === pkgId);
         if (!pkg) return;
-        onUpdateCatalogPackages(prev => [...prev, { ...pkg, scope: 'catalog', updatedAt: new Date().toISOString() }]);
+        onUpsertCatalogPackage({ ...pkg, scope: 'catalog', updatedAt: new Date().toISOString() });
         onUpdateProjectPackages(prev => ({ ...prev, packages: (prev.packages || []).filter(p => p.id !== pkgId) }));
     };
 
@@ -140,7 +159,7 @@ export default function PackagesView({ catalogPackages, projectPackages, onUpdat
         if (pkg.scope === 'project') {
             onUpdateProjectPackages(prev => ({ ...prev, packages: [...(prev.packages || []), newPkg] }));
         } else {
-            onUpdateCatalogPackages(prev => [...prev, newPkg]);
+            onUpsertCatalogPackage(newPkg);
         }
         setSelectedPkgId(newPkg.id);
         setEditingName(newPkg.id);

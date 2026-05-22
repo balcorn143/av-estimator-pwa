@@ -38,7 +38,8 @@ Run the SQL files in this order against a fresh Supabase project (SQL Editor):
 3. `supabase-catalog-items.sql` — catalog_items table
 4. `supabase-catalog-realtime.sql` — realtime publication for catalog_items
 5. `supabase-catalog-sync.sql` — catalog sync helpers
-6. `supabase-uom-options.sql` — per-team UOM list on user_settings
+6. `supabase-uom-options.sql` — per-team UOM list on user_settings (legacy; superseded by step 7)
+7. `supabase-team-packages-migration.sql` — `team_packages` + `team_settings` tables (server-authoritative storage for catalog packages, templates, and UOM options), realtime publication, and a data migration that lifts surviving data out of `user_settings`. **Required** — catalog packages and templates moved off `user_settings` to fix a duplicate-row data-loss bug.
 
 Then update `src/config.js` with your project's `SUPABASE_URL` and `SUPABASE_ANON_KEY`.
 
