@@ -114,7 +114,7 @@ export default function App() {
     const [pendingRevisionProjectId, setPendingRevisionProjectId] = useState(null); // For revisions on non-active projects
     const [revisionPromptManualCreate, setRevisionPromptManualCreate] = useState(false);
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
-    const [projectFilter, setProjectFilter] = useState('active');
+    const [projectFilter, setProjectFilter] = useState('all');
     
     // Current project state (when a project is open)
     const [tab, setTab] = useState('project');

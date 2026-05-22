@@ -7,6 +7,18 @@ import { supabase } from '../config';
 
 const PAGE_SIZE = 1000;
 
+// Normalize a folder path: trim, strip leading/trailing slashes, collapse
+// duplicate slashes, drop blank segments. Empty/null → null (Uncategorized).
+const normalizeFolder = (folder) => {
+    if (folder == null) return null;
+    const cleaned = String(folder)
+        .split('/')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .join('/');
+    return cleaned || null;
+};
+
 const toDb = (pkg, teamId, userId) => ({
     team_id: teamId,
     package_id: pkg.id,
@@ -14,6 +26,7 @@ const toDb = (pkg, teamId, userId) => ({
     scope: 'catalog',
     version: pkg.version ?? 1,
     items: pkg.items || [],
+    folder: normalizeFolder(pkg.folder),
     deleted: !!pkg.deleted,
     updated_by: userId ?? null,
 });
@@ -24,6 +37,7 @@ export const rowToPackage = (row) => ({
     scope: 'catalog',
     version: Number(row.version) || 1,
     items: Array.isArray(row.items) ? row.items : [],
+    folder: row.folder || null,
     deleted: !!row.deleted,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

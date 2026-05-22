@@ -1,5 +1,5 @@
 import React from 'react';
-const { useState, useEffect } = React;
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
 import { styles } from '../styles';
 import { Icons } from '../icons';
 import { fmtCost, fmtHrs } from '../utils/formatters';
@@ -7,6 +7,60 @@ import { PHASE_OPTIONS } from '../constants';
 import useFlexibleColumns from '../hooks/useFlexibleColumns';
 import ColumnLayoutManager from './ColumnLayoutManager';
 import { generatePackageId, findAllPackageInstances } from '../utils/packages';
+
+const LEFT_PANEL_KEY = 'packages-left-panel-width';
+const SECTION_COLLAPSE_KEY = 'packages-section-collapsed';
+const FOLDER_COLLAPSE_KEY = 'packages-folder-collapsed';
+const SORT_KEY = 'packages-sort';
+
+// Parse a saved width clamp into bounds. 220 is the minimum where folder
+// indentation + actions still look acceptable; 800 keeps the right panel
+// usable on smaller windows.
+const clampWidth = (n) => Math.max(220, Math.min(800, n));
+
+// Build a tree of folders + packages from a flat list. Folder paths are
+// forward-slash delimited (e.g., "Cisco/Conference Bars"). Packages without
+// a folder land in root.packages; sub-folders nest via subfolders[name].
+const buildFolderTree = (pkgs) => {
+    const root = { name: '', path: '', subfolders: {}, packages: [] };
+    (pkgs || []).forEach(pkg => {
+        const folder = (pkg.folder || '').trim();
+        if (!folder) { root.packages.push(pkg); return; }
+        const segments = folder.split('/').map(s => s.trim()).filter(Boolean);
+        if (segments.length === 0) { root.packages.push(pkg); return; }
+        let node = root;
+        let path = '';
+        for (const seg of segments) {
+            path = path ? `${path}/${seg}` : seg;
+            if (!node.subfolders[seg]) {
+                node.subfolders[seg] = { name: seg, path, subfolders: {}, packages: [] };
+            }
+            node = node.subfolders[seg];
+        }
+        node.packages.push(pkg);
+    });
+    return root;
+};
+
+const countInTree = (node) => {
+    let n = (node.packages || []).length;
+    for (const child of Object.values(node.subfolders || {})) n += countInTree(child);
+    return n;
+};
+
+// Sort is just direction — name only, A→Z or Z→A. Matches the locations
+// pane (single SortAZ icon button there); we expose both directions because
+// the user asked for explicit Z→A in addition.
+const sortPackages = (pkgs, dir) => {
+    const factor = dir === 'desc' ? -1 : 1;
+    return [...pkgs].sort((a, b) => {
+        const av = (a.name || '').toLowerCase();
+        const bv = (b.name || '').toLowerCase();
+        if (av < bv) return -factor;
+        if (av > bv) return factor;
+        return 0;
+    });
+};
 
 const PKG_COLUMNS = [
     { id: 'qtyPerPkg',    label: 'Qty/Pkg',     width: 75 },
@@ -40,6 +94,7 @@ export default function PackagesView({
     onInitialPkgConsumed,
 }) {
     const [selectedPkgId, setSelectedPkgId] = useState(null);
+    const [hoveredPkgId, setHoveredPkgId] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
     const [newName, setNewName] = useState('');
     const [newScope, setNewScope] = useState('catalog');
@@ -51,8 +106,97 @@ export default function PackagesView({
     const [editingQpp, setEditingQpp] = useState({});
     const [editingCost, setEditingCost] = useState({});
     const [editingLabor, setEditingLabor] = useState({});
+    // sortField/sortDir drive in-package item sorting (the table on the right).
+    // Package-list ordering uses pkgSortDir below.
     const [sortField, setSortField] = useState(null);
     const [sortDir, setSortDir] = useState('asc');
+
+    // Left panel — resizable, with persisted width, collapsible sections and
+    // folders, and per-list sort. All persisted to localStorage so the user's
+    // layout survives reloads.
+    const [leftPanelWidth, setLeftPanelWidth] = useState(() => {
+        const saved = localStorage.getItem(LEFT_PANEL_KEY);
+        return saved ? clampWidth(parseInt(saved, 10) || 280) : 280;
+    });
+    const leftPanelResizing = useRef(false);
+    const startLeftPanelResize = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        leftPanelResizing.current = true;
+        const startX = e.clientX;
+        const startWidth = leftPanelWidth;
+        const onMouseMove = (ev) => {
+            const next = clampWidth(startWidth + (ev.clientX - startX));
+            setLeftPanelWidth(next);
+        };
+        const onMouseUp = () => {
+            leftPanelResizing.current = false;
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            setLeftPanelWidth(w => { localStorage.setItem(LEFT_PANEL_KEY, String(w)); return w; });
+        };
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    }, [leftPanelWidth]);
+
+    const [collapsedSections, setCollapsedSections] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(SECTION_COLLAPSE_KEY)) || {}; } catch { return {}; }
+    });
+    const toggleSection = (key) => setCollapsedSections(prev => {
+        const next = { ...prev, [key]: !prev[key] };
+        localStorage.setItem(SECTION_COLLAPSE_KEY, JSON.stringify(next));
+        return next;
+    });
+
+    const [collapsedFolders, setCollapsedFolders] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(FOLDER_COLLAPSE_KEY)) || {}; } catch { return {}; }
+    });
+    const toggleFolder = (path) => setCollapsedFolders(prev => {
+        const next = { ...prev, [path]: !prev[path] };
+        localStorage.setItem(FOLDER_COLLAPSE_KEY, JSON.stringify(next));
+        return next;
+    });
+
+    // Sort direction only ('asc' | 'desc'). Default A→Z. Persisted.
+    const [pkgSortDir, setPkgSortDir] = useState(() => {
+        const saved = localStorage.getItem(SORT_KEY);
+        return saved === 'desc' ? 'desc' : 'asc';
+    });
+    const updateSortDir = (dir) => { setPkgSortDir(dir); localStorage.setItem(SORT_KEY, dir); };
+
+    // Expand/collapse-all helpers operate on both section + folder collapse
+    // state at once, mirroring the locations pane's "expand all / collapse
+    // all" affordances.
+    const expandAllPackages = () => {
+        setCollapsedSections({});
+        setCollapsedFolders({});
+        localStorage.setItem(SECTION_COLLAPSE_KEY, JSON.stringify({}));
+        localStorage.setItem(FOLDER_COLLAPSE_KEY, JSON.stringify({}));
+    };
+    const collapseAllPackages = () => {
+        const sections = { catalog: true, project: true };
+        const folders = {};
+        const walk = (node) => {
+            Object.values(node.subfolders || {}).forEach(child => {
+                folders[child.path] = true;
+                walk(child);
+            });
+        };
+        walk(buildFolderTree(catalogPackages || []));
+        setCollapsedSections(sections);
+        setCollapsedFolders(folders);
+        localStorage.setItem(SECTION_COLLAPSE_KEY, JSON.stringify(sections));
+        localStorage.setItem(FOLDER_COLLAPSE_KEY, JSON.stringify(folders));
+    };
+
+    // Local edit buffer for the right-panel folder input so typing doesn't
+    // fire a Supabase write on every keystroke. Commits on blur / Enter.
+    const [folderEditValue, setFolderEditValue] = useState(null);
+    useEffect(() => { setFolderEditValue(null); }, [selectedPkgId]);
 
     const handleSort = (field) => {
         if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -91,6 +235,19 @@ export default function PackagesView({
     const sortAlpha = (pkgs) => [...pkgs].sort((a, b) => a.name.localeCompare(b.name));
     const allPackages = [...(catalogPackages || []), ...(projectPackages || [])];
     const selectedPkg = allPackages.find(p => p.id === selectedPkgId);
+    // Every folder path mentioned anywhere in the catalog list — used by the
+    // datalist autocomplete on the right-panel folder input so the user can
+    // pick an existing folder instead of retyping it.
+    const allFolders = useMemo(() => {
+        const set = new Set();
+        (catalogPackages || []).forEach(pkg => {
+            if (!pkg.folder) return;
+            const segs = pkg.folder.split('/').map(s => s.trim()).filter(Boolean);
+            let path = '';
+            for (const s of segs) { path = path ? `${path}/${s}` : s; set.add(path); }
+        });
+        return [...set].sort();
+    }, [catalogPackages]);
     const selectedScope = selectedPkg ? (selectedPkg.scope === 'project' ? 'project' : 'catalog') : null;
     const instanceCount = selectedPkgId ? findAllPackageInstances(locations || [], selectedPkgId).length : 0;
 
@@ -230,35 +387,150 @@ export default function PackagesView({
         });
     };
 
-    const renderPkgList = (pkgs, label, scope) => (
-        <div style={{ marginBottom: '16px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid #2f3336' }}>
-                <span style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#8b98a5' }}>{label}</span>
-                <span style={styles.badge(scope === 'catalog' ? 'blue' : 'green')}>{pkgs.length}</span>
-            </div>
-            {pkgs.map(pkg => {
-                const c = styles.pkgColor(pkg.name);
-                const cost = (pkg.items || []).reduce((s, i) => s + ((i.qtyPerPackage || i.qty || 1) * (i.unitCost || 0)), 0);
-                const isSelected = selectedPkgId === pkg.id;
-                return (
-                    <div key={pkg.id} onClick={() => setSelectedPkgId(pkg.id)}
-                        style={{ padding: '10px 12px', cursor: 'pointer', borderLeft: `3px solid ${isSelected ? c.b : 'transparent'}`, backgroundColor: isSelected ? '#1a1f2e' : 'transparent', display: 'flex', alignItems: 'center', gap: '10px', transition: 'background 0.15s' }}
-                        onMouseEnter={e => { if (!isSelected) e.currentTarget.style.backgroundColor = '#161b22'; }}
-                        onMouseLeave={e => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}>
-                        <span style={{ width: '8px', height: '8px', borderRadius: '2px', backgroundColor: c.b, flexShrink: 0 }} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                            {editingName === pkg.id ? (
-                                <input type="text" value={editNameValue} onChange={e => setEditNameValue(e.target.value)} onBlur={finishRename} onKeyDown={e => { if (e.key === 'Enter') finishRename(); if (e.key === 'Escape') { setEditingName(null); setEditNameValue(''); } }} style={{ ...styles.input, padding: '2px 6px', fontSize: '13px', width: '100%' }} autoFocus />
-                            ) : (
-                                <div style={{ fontSize: '13px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pkg.name}</div>
-                            )}
-                            <div style={{ fontSize: '11px', color: '#6e767d', marginTop: '2px' }}>{(pkg.items || []).length} items · {fmtCost(cost)}</div>
-                        </div>
-                    </div>
-                );
-            })}
-        </div>
+    // Compact action button used inside each row in the package list.
+    // stopPropagation so clicking it doesn't also select the row underneath.
+    const RowAction = ({ onClick, title, color, children }) => (
+        <button
+            onClick={e => { e.stopPropagation(); onClick(); }}
+            title={title}
+            style={{
+                padding: '4px',
+                border: 'none',
+                borderRadius: '4px',
+                backgroundColor: 'transparent',
+                color: color || '#8b98a5',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                lineHeight: 0,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = '#2f3336'; e.currentTarget.style.color = color || '#e7e9ea'; }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = color || '#8b98a5'; }}
+        >
+            {children}
+        </button>
     );
+
+    // One row in the left list. depth indents the row to its folder level.
+    const renderPackageRow = (pkg, depth = 0) => {
+        const c = styles.pkgColor(pkg.name);
+        const cost = (pkg.items || []).reduce((s, i) => s + ((i.qtyPerPackage || i.qty || 1) * (i.unitCost || 0)), 0);
+        const isSelected = selectedPkgId === pkg.id;
+        const isHovered = hoveredPkgId === pkg.id;
+        const actionsVisible = isSelected || isHovered;
+        return (
+            <div key={pkg.id} onClick={() => setSelectedPkgId(pkg.id)}
+                style={{ padding: '10px 12px', paddingLeft: 12 + depth * 14, cursor: 'pointer', borderLeft: `3px solid ${isSelected ? c.b : 'transparent'}`, backgroundColor: isSelected ? '#1a1f2e' : 'transparent', display: 'flex', alignItems: 'center', gap: '10px', transition: 'background 0.15s' }}
+                onMouseEnter={e => { setHoveredPkgId(pkg.id); if (!isSelected) e.currentTarget.style.backgroundColor = '#161b22'; }}
+                onMouseLeave={e => { setHoveredPkgId(null); if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '2px', backgroundColor: c.b, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                    {editingName === pkg.id ? (
+                        <input type="text" value={editNameValue} onChange={e => setEditNameValue(e.target.value)} onClick={e => e.stopPropagation()} onBlur={finishRename} onKeyDown={e => { if (e.key === 'Enter') finishRename(); if (e.key === 'Escape') { setEditingName(null); setEditNameValue(''); } }} style={{ ...styles.input, padding: '2px 6px', fontSize: '13px', width: '100%' }} autoFocus />
+                    ) : (
+                        <div style={{ fontSize: '13px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={pkg.name}>{pkg.name}</div>
+                    )}
+                    <div style={{ fontSize: '11px', color: '#6e767d', marginTop: '2px' }}>{(pkg.items || []).length} items · {fmtCost(cost)}</div>
+                </div>
+                <div style={{
+                    display: 'flex',
+                    gap: '2px',
+                    flexShrink: 0,
+                    opacity: actionsVisible ? 1 : 0,
+                    pointerEvents: actionsVisible ? 'auto' : 'none',
+                    transition: 'opacity 0.15s',
+                }}>
+                    <RowAction onClick={() => startRenamePkg(pkg)} title="Rename"><Icons.Edit /></RowAction>
+                    <RowAction onClick={() => duplicatePackage(pkg.id)} title="Duplicate"><Icons.Copy /></RowAction>
+                    <RowAction onClick={() => setConfirmDelete(pkg.id)} title="Delete" color="#f87171"><Icons.Trash /></RowAction>
+                </div>
+            </div>
+        );
+    };
+
+    // Recursive folder tree. Renders packages directly in this node first
+    // (sorted), then each sub-folder header with its own subtree.
+    const renderFolderNode = (node, depth) => {
+        const subNames = Object.keys(node.subfolders || {}).sort((a, b) => a.localeCompare(b));
+        return (
+            <React.Fragment key={node.path || '__root'}>
+                {sortPackages(node.packages, pkgSortDir).map(pkg => renderPackageRow(pkg, depth))}
+                {subNames.map(name => {
+                    const child = node.subfolders[name];
+                    const collapsed = !!collapsedFolders[child.path];
+                    const total = countInTree(child);
+                    return (
+                        <div key={child.path}>
+                            <div
+                                onClick={() => toggleFolder(child.path)}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                    padding: '6px 12px',
+                                    paddingLeft: 12 + depth * 14,
+                                    cursor: 'pointer',
+                                    fontSize: '12px',
+                                    fontWeight: '600',
+                                    color: '#c9d1d9',
+                                    backgroundColor: '#141a22',
+                                    borderBottom: '1px solid #21262d',
+                                    userSelect: 'none',
+                                }}
+                                title={child.path}
+                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1a2230'}
+                                onMouseLeave={e => e.currentTarget.style.backgroundColor = '#141a22'}
+                            >
+                                <span style={{ display: 'inline-flex', color: '#8b98a5' }}>
+                                    {collapsed ? <Icons.ChevronRight /> : <Icons.ChevronDown />}
+                                </span>
+                                <span style={{ display: 'inline-flex', color: '#f59e0b' }}>
+                                    {collapsed ? <Icons.Folder /> : <Icons.FolderOpen />}
+                                </span>
+                                <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{child.name}</span>
+                                <span style={{ fontSize: '11px', color: '#6e767d', fontWeight: '500' }}>{total}</span>
+                            </div>
+                            {!collapsed && renderFolderNode(child, depth + 1)}
+                        </div>
+                    );
+                })}
+            </React.Fragment>
+        );
+    };
+
+    // Collapsible section header + body. supportsFolders=true wraps the
+    // package list in the folder tree; false renders flat (project packages).
+    const renderSection = ({ title, scope, pkgs, supportsFolders }) => {
+        const collapsed = !!collapsedSections[scope];
+        const sectionBadgeColor = scope === 'catalog' ? 'blue' : 'green';
+        return (
+            <div style={{ marginBottom: '8px' }}>
+                <div
+                    onClick={() => toggleSection(scope)}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '8px 12px',
+                        borderBottom: '1px solid #2f3336',
+                        backgroundColor: '#0d1117',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                    }}>
+                    <span style={{ display: 'inline-flex', color: '#8b98a5' }}>
+                        {collapsed ? <Icons.ChevronRight /> : <Icons.ChevronDown />}
+                    </span>
+                    <span style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#8b98a5', flex: 1 }}>{title}</span>
+                    <span style={styles.badge(sectionBadgeColor)}>{pkgs.length}</span>
+                </div>
+                {!collapsed && (
+                    supportsFolders
+                        ? renderFolderNode(buildFolderTree(pkgs), 0)
+                        : sortPackages(pkgs, pkgSortDir).map(pkg => renderPackageRow(pkg, 0))
+                )}
+            </div>
+        );
+    };
 
     return (
         <div>
@@ -289,20 +561,55 @@ export default function PackagesView({
             )}
 
             <div style={{ display: 'flex', gap: '0', border: '1px solid #2f3336', borderRadius: '12px', overflow: 'hidden', minHeight: '500px', backgroundColor: '#0d1117' }}>
-                {/* Left panel: Package list */}
-                <div style={{ width: '260px', borderRight: '1px solid #2f3336', overflowY: 'auto', flexShrink: 0 }}>
-                    {(catalogPackages || []).length === 0 && (projectPackages || []).length === 0 ? (
-                        <div style={{ padding: '40px 20px', textAlign: 'center', color: '#6e767d' }}>
-                            <div style={{ fontSize: '36px', marginBottom: '12px' }}>📦</div>
-                            <div style={{ fontSize: '13px' }}>No packages yet</div>
-                            <div style={{ fontSize: '12px', marginTop: '4px' }}>Click "New Package" to get started</div>
+                {/* Left panel: Package list — resizable, with sort + folder tree */}
+                <div style={{ width: leftPanelWidth + 'px', borderRight: '1px solid #2f3336', display: 'flex', flexDirection: 'column', flexShrink: 0, position: 'relative' }}>
+                    {/* Header bar — matches the locations sidebar: title on the
+                        left, icon actions on the right (expand/collapse all,
+                        sort A→Z, sort Z→A). The active sort direction is
+                        highlighted blue. */}
+                    <div style={{ padding: '12px 16px 8px', borderBottom: '1px solid #2f3336', backgroundColor: '#0d1117' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '13px', fontWeight: '600', color: '#8b98a5', textTransform: 'uppercase', letterSpacing: '1px' }}>Packages</span>
+                            <div style={{ display: 'flex', gap: '4px' }}>
+                                <button style={{ ...styles.iconButton, color: '#8b98a5' }} onClick={expandAllPackages} title="Expand All"><Icons.ChevronsDown /></button>
+                                <button style={{ ...styles.iconButton, color: '#8b98a5' }} onClick={collapseAllPackages} title="Collapse All"><Icons.ChevronsUp /></button>
+                                <button
+                                    style={{ ...styles.iconButton, color: pkgSortDir === 'asc' ? '#1d9bf0' : '#8b98a5' }}
+                                    onClick={() => updateSortDir('asc')}
+                                    title="Sort A→Z">
+                                    <Icons.SortAZ />
+                                </button>
+                                <button
+                                    style={{ ...styles.iconButton, color: pkgSortDir === 'desc' ? '#1d9bf0' : '#8b98a5' }}
+                                    onClick={() => updateSortDir('desc')}
+                                    title="Sort Z→A">
+                                    <span style={{ display: 'inline-flex', transform: 'scaleY(-1)' }}><Icons.SortAZ /></span>
+                                </button>
+                            </div>
                         </div>
-                    ) : (
-                        <>
-                            {(catalogPackages || []).length > 0 && renderPkgList(sortAlpha(catalogPackages), 'Catalog Packages', 'catalog')}
-                            {(projectPackages || []).length > 0 && renderPkgList(sortAlpha(projectPackages), 'Project Packages', 'project')}
-                        </>
-                    )}
+                    </div>
+                    <div style={{ flex: 1, overflowY: 'auto' }}>
+                        {(catalogPackages || []).length === 0 && (projectPackages || []).length === 0 ? (
+                            <div style={{ padding: '40px 20px', textAlign: 'center', color: '#6e767d' }}>
+                                <div style={{ fontSize: '36px', marginBottom: '12px' }}>📦</div>
+                                <div style={{ fontSize: '13px' }}>No packages yet</div>
+                                <div style={{ fontSize: '12px', marginTop: '4px' }}>Click "New Package" to get started</div>
+                            </div>
+                        ) : (
+                            <>
+                                {(catalogPackages || []).length > 0 && renderSection({ title: 'Catalog Packages', scope: 'catalog', pkgs: catalogPackages, supportsFolders: true })}
+                                {(projectPackages || []).length > 0 && renderSection({ title: 'Project Packages', scope: 'project', pkgs: projectPackages, supportsFolders: false })}
+                            </>
+                        )}
+                    </div>
+                    {/* Drag handle on the right edge to resize the panel */}
+                    <div
+                        onMouseDown={startLeftPanelResize}
+                        title="Drag to resize"
+                        style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '4px', cursor: 'col-resize', backgroundColor: 'transparent', zIndex: 5, transition: 'background-color 0.15s' }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1d9bf0'}
+                        onMouseLeave={e => { if (!leftPanelResizing.current) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                    />
                 </div>
 
                 {/* Right panel: Package detail */}
@@ -321,9 +628,36 @@ export default function PackagesView({
                                         <span style={{ width: '12px', height: '12px', borderRadius: '3px', backgroundColor: styles.pkgColor(selectedPkg.name).b }} />
                                         {selectedPkg.name}
                                     </h3>
-                                    <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#8b98a5' }}>
+                                    <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#8b98a5', alignItems: 'center', flexWrap: 'wrap' }}>
                                         <span style={styles.badge(selectedScope === 'catalog' ? 'blue' : 'green')}>{selectedScope === 'catalog' ? 'Catalog' : 'Project'}</span>
                                         <span>Used in {instanceCount} location{instanceCount !== 1 ? 's' : ''}</span>
+                                        {selectedScope === 'catalog' && (
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                                <span style={{ color: '#f59e0b', display: 'inline-flex' }}><Icons.Folder /></span>
+                                                <input
+                                                    type="text"
+                                                    list="catalog-folders"
+                                                    placeholder="No folder"
+                                                    value={folderEditValue !== null ? folderEditValue : (selectedPkg.folder || '')}
+                                                    onChange={e => setFolderEditValue(e.target.value)}
+                                                    onBlur={() => {
+                                                        if (folderEditValue !== null) {
+                                                            const next = folderEditValue.trim();
+                                                            if (next !== (selectedPkg.folder || '')) {
+                                                                updatePackage(selectedPkg.id, p => ({ ...p, folder: next || null }));
+                                                            }
+                                                            setFolderEditValue(null);
+                                                        }
+                                                    }}
+                                                    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setFolderEditValue(null); e.currentTarget.blur(); } }}
+                                                    title="Slash-delimited folder path, e.g. Cisco/Conference Bars"
+                                                    style={{ ...styles.inputSmall, width: '220px', padding: '2px 6px', fontSize: '12px' }}
+                                                />
+                                                <datalist id="catalog-folders">
+                                                    {allFolders.map(f => <option key={f} value={f} />)}
+                                                </datalist>
+                                            </span>
+                                        )}
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -512,23 +846,41 @@ export default function PackagesView({
                                 </button>
                             )}
 
-                            {/* Delete confirmation */}
-                            {confirmDelete === selectedPkg.id && (
-                                <div style={{ ...styles.card, marginTop: '16px', borderColor: '#f8717140', padding: '16px' }}>
-                                    <div style={{ marginBottom: '12px', fontSize: '14px' }}>
-                                        Delete <strong>{selectedPkg.name}</strong>?
-                                        {instanceCount > 0 && <span style={{ color: '#f59e0b' }}> This package is used in {instanceCount} location{instanceCount !== 1 ? 's' : ''}. Those instances will show as "missing".</span>}
-                                    </div>
-                                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                                        <button style={styles.button('secondary')} onClick={() => setConfirmDelete(null)}>Cancel</button>
-                                        <button style={{ ...styles.button('primary'), backgroundColor: '#f87171' }} onClick={() => deletePackage(selectedPkg.id)}>Delete</button>
-                                    </div>
-                                </div>
-                            )}
                         </div>
                     )}
                 </div>
             </div>
+
+            {/* Delete confirmation — true modal so it works for any package the
+                user clicks delete on (left-list trash icon or right-panel header),
+                not just the currently selected one. */}
+            {confirmDelete && (() => {
+                const pkg = allPackages.find(p => p.id === confirmDelete);
+                if (!pkg) return null;
+                const count = findAllPackageInstances(locations || [], pkg.id).length;
+                return (
+                    <div style={styles.modal} onClick={() => setConfirmDelete(null)}>
+                        <div style={{ ...styles.modalContent, width: '420px' }} onClick={e => e.stopPropagation()}>
+                            <h3 style={{ margin: '0 0 12px 0', fontSize: '18px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <Icons.Trash /> Delete "{pkg.name}"?
+                            </h3>
+                            {count > 0 ? (
+                                <p style={{ margin: '0 0 16px 0', color: '#f59e0b', fontSize: '13px' }}>
+                                    This package is used in {count} location{count !== 1 ? 's' : ''}. Those instances will show as "missing".
+                                </p>
+                            ) : (
+                                <p style={{ margin: '0 0 16px 0', color: '#8b98a5', fontSize: '13px' }}>
+                                    This package is not used in any location.
+                                </p>
+                            )}
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                <button style={styles.button('secondary')} onClick={() => setConfirmDelete(null)}>Cancel</button>
+                                <button style={{ ...styles.button('primary'), backgroundColor: '#f87171' }} onClick={() => deletePackage(pkg.id)}>Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }

@@ -5,6 +5,51 @@ import { Icons } from '../icons'
 import { PROJECT_STATUSES } from '../constants'
 import { APP_VERSION } from '../config'
 import { fmtCost, fmtHrs } from '../utils/formatters'
+import useFlexibleColumns from '../hooks/useFlexibleColumns'
+
+// Project-dashboard columns — driven through useFlexibleColumns so each
+// header has a drag handle to resize. The Actions column is fixed (no
+// resize / reorder) since the ellipsis button is a fixed-width control.
+const PROJECT_DASH_COLUMNS = [
+    { id: 'name',          label: 'Project',      width: 240 },
+    { id: 'client',        label: 'Client',       width: 180 },
+    { id: 'projectNumber', label: 'Project #',    width: 120 },
+    { id: 'material',      label: 'Value',        width: 110 },
+    { id: 'labor',         label: 'Labor',        width: 100 },
+    { id: 'status',        label: 'Status',       width: 130 },
+    { id: 'updatedAt',     label: 'Last Updated', width: 200 },
+    { id: 'actions',       label: '',             width: 48, fixed: true },
+];
+
+// Pipeline stages — All first, then in lifecycle order. Keys after 'all'
+// correspond directly to PROJECT_STATUSES keys so filter === status.
+const PIPELINE_STAGES = [
+    { key: 'all',                label: 'All' },
+    { key: 'developing',         label: 'Developing' },
+    { key: 'proposal-submitted', label: 'Submitted' },
+    { key: 'active',             label: 'Active' },
+    { key: 'completed',          label: 'Completed' },
+    { key: 'lost',               label: 'Lost' },
+    { key: 'archived',           label: 'Archived' },
+];
+
+// Avatar helpers — deterministic chip color + 2-letter initials derived
+// from the user's email so each estimator gets a consistent visual.
+const AVATAR_COLORS = ['#1d9bf0', '#00ba7c', '#f59e0b', '#a855f7', '#f87171', '#06b6d4', '#ec4899', '#10b981'];
+const getInitials = (email) => {
+    if (!email) return '?';
+    const local = email.split('@')[0];
+    const parts = local.split(/[._\-+]+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return local.slice(0, 2).toUpperCase();
+};
+const getAvatarColor = (email) => {
+    if (!email) return '#6e767d';
+    let hash = 0;
+    for (let i = 0; i < email.length; i++) hash = (email.charCodeAt(i) + ((hash << 5) - hash)) | 0;
+    return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+};
+
 
 export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, onCreateRevision, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout, onForceCheckin, selectedProjectId, onSelectProject, packages }) {
     const [contextMenu, setContextMenu] = useState(null);
@@ -13,6 +58,11 @@ export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreat
     const [sortDir, setSortDir] = useState('desc');
     const [expandedRevisions, setExpandedRevisions] = useState({});
     const contextMenuRef = useRef(null);
+
+    // Resizable columns for the project table. layoutKey lets users save
+    // named column layouts via localStorage (same hook used by BOM /
+    // PackagesView).
+    const { columns: projCols, startResize: startProjResize } = useFlexibleColumns(PROJECT_DASH_COLUMNS, 'projects-dashboard');
 
     const handleSort = (col) => {
         if (sortCol === col) { setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }
@@ -27,12 +77,13 @@ export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreat
     // Filter and search projects
     const filteredProjects = useMemo(() => {
         let result = projects.filter(p => {
-            // Status filter
-            if (filter === 'active' && (p.status === 'archived' || p.status === 'completed' || p.status === 'lost')) return false;
-            if (filter === 'submitted' && p.status !== 'proposal-submitted') return false;
-            if (filter === 'completed' && p.status !== 'completed') return false;
-            if (filter === 'lost' && p.status !== 'lost') return false;
-            if (filter === 'archived' && p.status !== 'archived') return false;
+            // Status filter — exact match against the project's status; 'all'
+            // is the only bypass. Projects with no status default to 'developing'
+            // so the Developing tab catches them.
+            if (filter !== 'all') {
+                const projectStatus = p.status || 'developing';
+                if (projectStatus !== filter) return false;
+            }
 
             // Search
             if (searchTerm) {
@@ -86,13 +137,11 @@ export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreat
     }, [contextMenu]);
 
     const statusCounts = useMemo(() => {
-        const counts = { all: projects.length, active: 0, submitted: 0, completed: 0, lost: 0, archived: 0 };
+        const counts = { all: projects.length };
+        PIPELINE_STAGES.forEach(s => { if (s.key !== 'all') counts[s.key] = 0; });
         projects.forEach(p => {
-            if (p.status === 'archived') counts.archived++;
-            else if (p.status === 'lost') counts.lost++;
-            else if (p.status === 'completed') counts.completed++;
-            if (p.status === 'proposal-submitted') counts.submitted++;
-            if (p.status !== 'archived' && p.status !== 'completed' && p.status !== 'lost') counts.active++;
+            const status = p.status || 'developing';
+            if (counts[status] !== undefined) counts[status]++;
         });
         return counts;
     }, [projects]);
@@ -119,13 +168,14 @@ export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreat
                 )}
             </header>
 
-            {/* Main content */}
-            <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '32px 24px' }}>
-                {/* Title and actions */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+            {/* Main content \u2014 capped at 70% of viewport so the table reads
+                comfortably on wide monitors instead of stretching edge to edge. */}
+            <div style={{ maxWidth: '70vw', margin: '0 auto', padding: '20px 24px 48px' }}>
+                {/* Title row */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '16px' }}>
                     <div>
-                        <h1 style={{ margin: '0 0 4px 0', fontSize: '28px', fontWeight: '700', color: '#e7e9ea' }}>Projects</h1>
-                        <p style={{ margin: 0, color: '#6e767d', fontSize: '14px' }}>{projects.length} total projects</p>
+                        <h1 style={{ margin: '0 0 2px 0', fontSize: '24px', fontWeight: '700', color: '#e7e9ea' }}>Projects</h1>
+                        <p style={{ margin: 0, color: '#6e767d', fontSize: '13px' }}>{`${projects.length} total project${projects.length === 1 ? '' : 's'}`}</p>
                     </div>
                     <div style={{ display: 'flex', gap: '8px' }}>
                         <button style={styles.button('secondary')} onClick={onOpenCatalog}>
@@ -137,166 +187,233 @@ export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreat
                     </div>
                 </div>
 
-                {/* Filters and search */}
-                <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', gap: '4px', backgroundColor: '#1a1f26', borderRadius: '8px', padding: '4px' }}>
-                        {[
-                            { key: 'active', label: 'Active' },
-                            { key: 'submitted', label: 'Submitted' },
-                            { key: 'completed', label: 'Completed' },
-                            { key: 'lost', label: 'Lost' },
-                            { key: 'archived', label: 'Archived' },
-                            { key: 'all', label: 'All' },
-                        ].map(f => (
+                {/* Prominent pipeline strip \u2014 one column per stage, count under label.
+                    Selected stage gets a blue underline. No dollar subtitles. */}
+                <div style={{
+                    display: 'flex',
+                    borderBottom: '1px solid #2f3336',
+                    marginBottom: '16px',
+                    overflowX: 'auto',
+                }}>
+                    {PIPELINE_STAGES.map(stage => {
+                        const isActive = filter === stage.key;
+                        return (
                             <button
-                                key={f.key}
+                                key={stage.key}
+                                onClick={() => onFilterChange(stage.key)}
                                 style={{
-                                    ...styles.smallButton,
-                                    backgroundColor: filter === f.key ? '#2f3336' : 'transparent',
-                                    color: filter === f.key ? '#e7e9ea' : '#6e767d'
+                                    flex: '1 1 0',
+                                    minWidth: '120px',
+                                    padding: '12px 16px',
+                                    border: 'none',
+                                    background: 'transparent',
+                                    borderBottom: `3px solid ${isActive ? '#1d9bf0' : 'transparent'}`,
+                                    cursor: 'pointer',
+                                    textAlign: 'left',
+                                    transition: 'background-color 0.15s, border-color 0.15s',
                                 }}
-                                onClick={() => onFilterChange(f.key)}>
-                                {f.label} ({statusCounts[f.key]})
+                                onMouseEnter={e => { if (!isActive) e.currentTarget.style.backgroundColor = '#161b22'; }}
+                                onMouseLeave={e => { if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                            >
+                                <div style={{ fontSize: '11px', fontWeight: '600', color: isActive ? '#1d9bf0' : '#8b98a5', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>{stage.label}</div>
+                                <div style={{ fontSize: '22px', fontWeight: '700', color: isActive ? '#e7e9ea' : '#c9d1d9' }}>{statusCounts[stage.key]}</div>
                             </button>
-                        ))}
-                    </div>
+                        );
+                    })}
+                </div>
+
+                {/* Search + sort toolbar */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
                     <input
                         type="text"
                         value={searchTerm}
                         onChange={e => onSearchChange(e.target.value)}
-                        placeholder="Search projects..."
-                        style={{ ...styles.input, width: '250px' }}
+                        placeholder="Search projects, clients, project numbers..."
+                        style={{ ...styles.input, width: '320px', maxWidth: '100%' }}
                     />
+                    <div style={{ fontSize: '12px', color: '#6e767d' }}>
+                        Showing {filteredProjects.length} of {projects.length}
+                    </div>
                 </div>
 
-                {/* Projects table */}
+                {/* Projects table \u2014 separate Name / Client columns, every column
+                    width drag-resizable via useFlexibleColumns. */}
                 {filteredProjects.length > 0 ? (
                     <div style={{ backgroundColor: '#1a1f26', borderRadius: '12px', border: '1px solid #2f3336', overflow: 'hidden' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                            <thead>
-                                <tr style={{ borderBottom: '1px solid #2f3336' }}>
-                                    {[
-                                        { id: 'name', label: 'Project', align: 'left', pad: '10px 16px' },
-                                        { id: 'client', label: 'Client', align: 'left' },
-                                        { id: 'projectNumber', label: 'Project #', align: 'left' },
-                                        { id: 'status', label: 'Status', align: 'center' },
-                                        { id: 'material', label: 'Material', align: 'right' },
-                                        { id: 'labor', label: 'Labor', align: 'right' },
-                                        { id: 'updatedAt', label: 'Last Updated', align: 'left' },
-                                    ].map(col => (
-                                        <th
-                                            key={col.id}
-                                            style={{ padding: col.pad || '10px 12px', textAlign: col.align, fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-                                            onClick={() => handleSort(col.id)}
-                                        >
-                                            {col.label}<SortIcon col={col.id} />
-                                        </th>
-                                    ))}
-                                    <th style={{ padding: '10px 12px', width: '40px' }}></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {filteredProjects.map(project => {
-                                    const totals = getProjectTotals(project);
-                                    const status = PROJECT_STATUSES[project.status] || PROJECT_STATUSES.developing;
-                                    const checkout = checkouts[project.id];
-                                    const updDate = project.updatedAt ? new Date(project.updatedAt) : null;
-                                    const isSelected = selectedProjectId === project.id;
-                                    const revisions = project.revisions || [];
-                                    const isExpanded = expandedRevisions[project.id];
-                                    return (
-                                        <React.Fragment key={project.id}>
-                                        <tr
-                                            style={{ borderBottom: '1px solid #2f3336', cursor: 'pointer', transition: 'background-color 0.1s', backgroundColor: isSelected ? '#1d3a5c' : 'transparent' }}
-                                            onClick={() => onSelectProject(project.id)}
-                                            onDoubleClick={() => onOpen(project.id)}
-                                            onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, project }); }}
-                                            onMouseEnter={e => { if (!isSelected) e.currentTarget.style.backgroundColor = '#1e2530'; }}
-                                            onMouseLeave={e => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}
-                                        >
-                                            <td style={{ padding: '12px 16px' }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                    {revisions.length > 0 && (
-                                                        <span
-                                                            style={{ cursor: 'pointer', display: 'inline-flex', color: '#6e767d', flexShrink: 0 }}
-                                                            onClick={e => { e.stopPropagation(); setExpandedRevisions(prev => ({ ...prev, [project.id]: !prev[project.id] })); }}
-                                                            title={isExpanded ? 'Collapse revisions' : 'Expand revisions'}
-                                                        >
-                                                            {isExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}
-                                                        </span>
-                                                    )}
-                                                    <div>
-                                                        <div style={{ fontWeight: '600', color: '#e7e9ea', fontSize: '14px' }}>{project.name}</div>
-                                                        {checkout && (
-                                                            <div style={{ fontSize: '11px', color: checkout.userId === session?.user?.id ? '#00ba7c' : '#f59e0b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                                <Icons.Lock /> {checkout.userId === session?.user?.id ? 'Checked out by you' : `Checked out by ${checkout.email}`}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td style={{ padding: '12px 12px', color: '#8b98a5', fontSize: '13px' }}>{project.client || '\u2014'}</td>
-                                            <td style={{ padding: '12px 12px', color: '#8b98a5', fontSize: '13px' }}>{project.projectNumber || '\u2014'}</td>
-                                            <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                                                <span style={{ ...styles.badge(''), backgroundColor: status.bg, color: status.color, fontSize: '11px' }}>{status.label}</span>
-                                            </td>
-                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#00ba7c', fontWeight: '600', fontSize: '13px' }}>{fmtCost(totals.cost)}</td>
-                                            <td style={{ padding: '12px 12px', textAlign: 'right', color: '#1d9bf0', fontWeight: '600', fontSize: '13px' }}>{fmtHrs(totals.labor)}</td>
-                                            <td style={{ padding: '12px 12px' }}>
-                                                <div style={{ color: '#e7e9ea', fontSize: '12px', whiteSpace: 'nowrap' }}>{updDate ? updDate.toLocaleDateString() + ' ' + updDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '\u2014'}</div>
-                                                {project.updatedBy && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '1px' }}>{project.updatedBy}</div>}
-                                            </td>
-                                            <td style={{ padding: '12px 8px', textAlign: 'center' }}>
-                                                <button
-                                                    style={{ ...styles.iconButton, color: '#6e767d', padding: '4px' }}
-                                                    onClick={e => { e.stopPropagation(); onEdit(project); }}
-                                                    title="Edit project info">
-                                                    <Icons.Edit />
-                                                </button>
-                                            </td>
-                                        </tr>
-                                        {isExpanded && [...revisions].reverse().map(rev => {
-                                            const revDate = rev.createdAt ? new Date(rev.createdAt) : null;
-                                            // Calculate revision totals from snapshot if available
-                                            let revCost = null, revLabor = null;
-                                            if (rev.snapshot) {
-                                                const revProj = { ...project, locations: rev.snapshot.locations || [], packages: rev.snapshot.packages || project.packages || [] };
-                                                const revTotals = getProjectTotals(revProj);
-                                                revCost = revTotals.cost;
-                                                revLabor = revTotals.labor;
-                                            }
-                                            return (
-                                                <tr
-                                                    key={rev.id}
-                                                    style={{ borderBottom: '1px solid #2f3336', backgroundColor: '#151a21', cursor: 'pointer' }}
-                                                    onDoubleClick={() => { onOpenRevision(project.id, rev.id); }}
-                                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1a2030'}
-                                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = '#151a21'}
-                                                >
-                                                    <td style={{ padding: '8px 16px 8px 46px' }}>
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            <Icons.RotateCcw />
-                                                            <span style={{ fontWeight: '500', color: '#8b98a5', fontSize: '13px' }}>{rev.label}</span>
-                                                        </div>
-                                                        {rev.notes && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '2px', paddingLeft: '22px' }}>{rev.notes}</div>}
-                                                    </td>
-                                                    <td style={{ padding: '8px 12px' }} colSpan="2"></td>
-                                                    <td style={{ padding: '8px 12px' }}></td>
-                                                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#00ba7c', fontSize: '12px' }}>{revCost != null ? fmtCost(revCost) : '\u2014'}</td>
-                                                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#1d9bf0', fontSize: '12px' }}>{revLabor != null ? fmtHrs(revLabor) : '\u2014'}</td>
-                                                    <td style={{ padding: '8px 12px' }}>
-                                                        <div style={{ color: '#6e767d', fontSize: '11px', whiteSpace: 'nowrap' }}>{revDate ? revDate.toLocaleDateString() : '\u2014'}</div>
-                                                        {rev.createdBy && <div style={{ color: '#4a5568', fontSize: '10px' }}>{rev.createdBy}</div>}
-                                                    </td>
-                                                    <td style={{ padding: '8px 8px' }}></td>
-                                                </tr>
-                                            );
-                                        })}
-                                        </React.Fragment>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
+                        <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', minWidth: projCols.reduce((s, c) => s + c.width, 0) }}>
+                                <colgroup>
+                                    {projCols.map(col => <col key={col.id} style={{ width: col.width + 'px' }} />)}
+                                </colgroup>
+                                <thead>
+                                    <tr style={{ borderBottom: '1px solid #2f3336', backgroundColor: '#161b22' }}>
+                                        {projCols.map((col, colIndex) => (
+                                            <th
+                                                key={col.id}
+                                                style={{ ...styles.thResizable, padding: '10px 12px', textAlign: col.id === 'material' || col.id === 'labor' ? 'right' : (col.id === 'status' || col.id === 'actions' ? 'center' : 'left'), fontSize: '11px', color: '#6e767d', fontWeight: '600', textTransform: 'uppercase', cursor: col.fixed ? 'default' : 'pointer', userSelect: 'none', whiteSpace: 'nowrap', letterSpacing: '0.04em' }}
+                                                onClick={() => { if (!col.fixed && col.id !== 'actions') handleSort(col.id); }}
+                                            >
+                                                {col.label}{!col.fixed && col.id !== 'actions' && <SortIcon col={col.id} />}
+                                                {!col.fixed && (
+                                                    <div
+                                                        style={styles.resizeHandle}
+                                                        onMouseDown={e => { e.stopPropagation(); startProjResize(colIndex, e); }}
+                                                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#1d9bf0'; }}
+                                                        onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = '#4a5568'; }}
+                                                    />
+                                                )}
+                                            </th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredProjects.map(project => {
+                                        const totals = getProjectTotals(project);
+                                        const status = PROJECT_STATUSES[project.status] || PROJECT_STATUSES.developing;
+                                        const checkout = checkouts[project.id];
+                                        const updDate = project.updatedAt ? new Date(project.updatedAt) : null;
+                                        const isSelected = selectedProjectId === project.id;
+                                        const revisions = project.revisions || [];
+                                        const isExpanded = expandedRevisions[project.id];
+                                        const updatedByEmail = project.updatedBy || '';
+                                        const tdBase = { padding: '12px 12px', overflow: 'hidden', textOverflow: 'ellipsis' };
+                                        return (
+                                            <React.Fragment key={project.id}>
+                                            <tr
+                                                style={{ borderBottom: '1px solid #2f3336', cursor: 'pointer', transition: 'background-color 0.1s', backgroundColor: isSelected ? '#1d3a5c' : 'transparent' }}
+                                                onClick={() => onSelectProject(project.id)}
+                                                onDoubleClick={() => onOpen(project.id)}
+                                                onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, project }); }}
+                                                onMouseEnter={e => { if (!isSelected) e.currentTarget.style.backgroundColor = '#1e2530'; }}
+                                                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                            >
+                                                {projCols.map(col => {
+                                                    switch (col.id) {
+                                                        case 'name':
+                                                            return (
+                                                                <td key={col.id} style={{ ...tdBase, padding: '12px 16px' }}>
+                                                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                                                                        {revisions.length > 0 && (
+                                                                            <span
+                                                                                style={{ cursor: 'pointer', display: 'inline-flex', color: '#6e767d', flexShrink: 0, marginTop: '2px' }}
+                                                                                onClick={e => { e.stopPropagation(); setExpandedRevisions(prev => ({ ...prev, [project.id]: !prev[project.id] })); }}
+                                                                                title={isExpanded ? 'Collapse revisions' : 'Expand revisions'}>
+                                                                                {isExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}
+                                                                            </span>
+                                                                        )}
+                                                                        <div style={{ minWidth: 0, flex: 1 }}>
+                                                                            <div style={{ fontWeight: '600', color: '#e7e9ea', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={project.name}>{project.name}</div>
+                                                                            {checkout && (
+                                                                                <div style={{ fontSize: '11px', color: checkout.userId === session?.user?.id ? '#00ba7c' : '#f59e0b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                                                    <Icons.Lock /> {checkout.userId === session?.user?.id ? 'Checked out by you' : `Checked out by ${checkout.email}`}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                </td>
+                                                            );
+                                                        case 'client':
+                                                            return (
+                                                                <td key={col.id} style={{ ...tdBase, color: '#8b98a5', fontSize: '13px', whiteSpace: 'nowrap' }} title={project.client || ''}>
+                                                                    {project.client || '\u2014'}
+                                                                </td>
+                                                            );
+                                                        case 'projectNumber':
+                                                            return (
+                                                                <td key={col.id} style={{ ...tdBase, color: '#8b98a5', fontSize: '13px', whiteSpace: 'nowrap' }}>
+                                                                    {project.projectNumber || '\u2014'}
+                                                                </td>
+                                                            );
+                                                        case 'material':
+                                                            return <td key={col.id} style={{ ...tdBase, textAlign: 'right', color: '#00ba7c', fontWeight: '600', fontSize: '13px', whiteSpace: 'nowrap' }}>{fmtCost(totals.cost)}</td>;
+                                                        case 'labor':
+                                                            return <td key={col.id} style={{ ...tdBase, textAlign: 'right', color: '#1d9bf0', fontWeight: '600', fontSize: '13px', whiteSpace: 'nowrap' }}>{fmtHrs(totals.labor)}</td>;
+                                                        case 'status':
+                                                            return (
+                                                                <td key={col.id} style={{ ...tdBase, textAlign: 'center' }}>
+                                                                    <span style={{ ...styles.badge(''), backgroundColor: status.bg, color: status.color, fontSize: '11px' }}>{status.label}</span>
+                                                                </td>
+                                                            );
+                                                        case 'updatedAt':
+                                                            return (
+                                                                <td key={col.id} style={{ ...tdBase, whiteSpace: 'nowrap' }}>
+                                                                    <div style={{ color: '#e7e9ea', fontSize: '12px' }}>{updDate ? updDate.toLocaleDateString() + ' ' + updDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '\u2014'}</div>
+                                                                    {updatedByEmail && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '2px' }}>by {updatedByEmail}</div>}
+                                                                </td>
+                                                            );
+                                                        case 'actions':
+                                                            return (
+                                                                <td key={col.id} style={{ padding: '12px 8px', textAlign: 'center' }}>
+                                                                    <button
+                                                                        style={{ ...styles.iconButton, color: '#8b98a5', padding: '4px 6px' }}
+                                                                        onClick={e => {
+                                                                            e.stopPropagation();
+                                                                            const rect = e.currentTarget.getBoundingClientRect();
+                                                                            setContextMenu({ x: rect.right - 200, y: rect.bottom + 4, project });
+                                                                        }}
+                                                                        title="Project actions">
+                                                                        <Icons.MoreHorizontal />
+                                                                    </button>
+                                                                </td>
+                                                            );
+                                                        default:
+                                                            return <td key={col.id} style={tdBase}></td>;
+                                                    }
+                                                })}
+                                            </tr>
+                                            {isExpanded && [...revisions].reverse().map(rev => {
+                                                const revDate = rev.createdAt ? new Date(rev.createdAt) : null;
+                                                let revCost = null, revLabor = null;
+                                                if (rev.snapshot) {
+                                                    const revProj = { ...project, locations: rev.snapshot.locations || [], packages: rev.snapshot.packages || project.packages || [] };
+                                                    const revTotals = getProjectTotals(revProj);
+                                                    revCost = revTotals.cost;
+                                                    revLabor = revTotals.labor;
+                                                }
+                                                return (
+                                                    <tr
+                                                        key={rev.id}
+                                                        style={{ borderBottom: '1px solid #2f3336', backgroundColor: '#151a21', cursor: 'pointer' }}
+                                                        onDoubleClick={() => { onOpenRevision(project.id, rev.id); }}
+                                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#1a2030'}
+                                                        onMouseLeave={e => e.currentTarget.style.backgroundColor = '#151a21'}
+                                                    >
+                                                        {projCols.map(col => {
+                                                            switch (col.id) {
+                                                                case 'name':
+                                                                    return (
+                                                                        <td key={col.id} style={{ padding: '8px 16px 8px 46px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                                <Icons.RotateCcw />
+                                                                                <span style={{ fontWeight: '500', color: '#8b98a5', fontSize: '13px' }}>{rev.label}</span>
+                                                                            </div>
+                                                                            {rev.notes && <div style={{ color: '#6e767d', fontSize: '11px', marginTop: '2px', paddingLeft: '22px' }}>{rev.notes}</div>}
+                                                                        </td>
+                                                                    );
+                                                                case 'material':
+                                                                    return <td key={col.id} style={{ padding: '8px 12px', textAlign: 'right', color: '#00ba7c', fontSize: '12px' }}>{revCost != null ? fmtCost(revCost) : '\u2014'}</td>;
+                                                                case 'labor':
+                                                                    return <td key={col.id} style={{ padding: '8px 12px', textAlign: 'right', color: '#1d9bf0', fontSize: '12px' }}>{revLabor != null ? fmtHrs(revLabor) : '\u2014'}</td>;
+                                                                case 'updatedAt':
+                                                                    return (
+                                                                        <td key={col.id} style={{ padding: '8px 12px' }}>
+                                                                            <div style={{ color: '#6e767d', fontSize: '11px', whiteSpace: 'nowrap' }}>{revDate ? revDate.toLocaleDateString() : '\u2014'}</div>
+                                                                            {rev.createdBy && <div style={{ color: '#4a5568', fontSize: '10px' }}>{rev.createdBy}</div>}
+                                                                        </td>
+                                                                    );
+                                                                default:
+                                                                    return <td key={col.id} style={{ padding: '8px 12px' }}></td>;
+                                                            }
+                                                        })}
+                                                    </tr>
+                                                );
+                                            })}
+                                            </React.Fragment>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 ) : (
                     <div style={{ textAlign: 'center', padding: '60px 20px' }}>
