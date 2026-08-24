@@ -533,14 +533,16 @@ export default function PackagesView({
     };
 
     return (
-        <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        // Fill the parent's height and let the two panes scroll internally
+        // instead of growing the page.
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0, height: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexShrink: 0 }}>
                 <h2 style={{ margin: 0, fontSize: '28px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '12px' }}><Icons.Package /> Packages <span style={styles.badge('green')}>{allPackages.length}</span></h2>
                 <button style={styles.button('primary')} onClick={() => setShowCreate(true)}><Icons.Plus /> New Package</button>
             </div>
 
             {showCreate && (
-                <div style={{ ...styles.card, marginBottom: '20px' }}>
+                <div style={{ ...styles.card, marginBottom: '20px', flexShrink: 0 }}>
                     <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>Create New Package</h3>
                     <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
                         <input type="text" placeholder="Package name" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createPackage(); }} style={{ ...styles.input, flex: 1 }} autoFocus />
@@ -560,9 +562,9 @@ export default function PackagesView({
                 </div>
             )}
 
-            <div style={{ display: 'flex', gap: '0', border: '1px solid #2f3336', borderRadius: '12px', overflow: 'hidden', minHeight: '500px', backgroundColor: '#0d1117' }}>
+            <div style={{ display: 'flex', gap: '0', border: '1px solid #2f3336', borderRadius: '12px', overflow: 'hidden', flex: 1, minHeight: 0, backgroundColor: '#0d1117' }}>
                 {/* Left panel: Package list — resizable, with sort + folder tree */}
-                <div style={{ width: leftPanelWidth + 'px', borderRight: '1px solid #2f3336', display: 'flex', flexDirection: 'column', flexShrink: 0, position: 'relative' }}>
+                <div style={{ width: leftPanelWidth + 'px', borderRight: '1px solid #2f3336', display: 'flex', flexDirection: 'column', flexShrink: 0, minHeight: 0, position: 'relative' }}>
                     {/* Header bar — matches the locations sidebar: title on the
                         left, icon actions on the right (expand/collapse all,
                         sort A→Z, sort Z→A). The active sort direction is
@@ -588,7 +590,7 @@ export default function PackagesView({
                             </div>
                         </div>
                     </div>
-                    <div style={{ flex: 1, overflowY: 'auto' }}>
+                    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
                         {(catalogPackages || []).length === 0 && (projectPackages || []).length === 0 ? (
                             <div style={{ padding: '40px 20px', textAlign: 'center', color: '#6e767d' }}>
                                 <div style={{ fontSize: '36px', marginBottom: '12px' }}>📦</div>
@@ -613,7 +615,7 @@ export default function PackagesView({
                 </div>
 
                 {/* Right panel: Package detail */}
-                <div style={{ flex: 1, overflow: 'auto', padding: '20px' }}>
+                <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'auto', overscrollBehavior: 'contain', padding: '20px' }}>
                     {!selectedPkg ? (
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#6e767d' }}>
                             <Icons.Package />

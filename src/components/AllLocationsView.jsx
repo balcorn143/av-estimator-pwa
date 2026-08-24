@@ -30,6 +30,7 @@ export default function AllLocationsView({
     compactMode,
     onAddToCatalog,
     onUpdateFromCatalog,
+    onUpdateToCatalog,
     catalogPkgs,
     projectPkgs,
     filterMode, // 'unfinished' to show only placeholder items
@@ -60,22 +61,55 @@ export default function AllLocationsView({
         return sortDir === 'asc' ? <Icons.ChevronUp /> : <Icons.ChevronDown />;
     };
 
-    const sortItems = (items) => {
+    // Shared comparator so items, package headers and package contents all
+    // order the same way for a given column + direction.
+    const compareVals = (aVal, bVal) => {
+        if (aVal == null) aVal = '';
+        if (bVal == null) bVal = '';
+        if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+        if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+        if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+    };
+
+    const itemSortValue = (item) => {
+        if (sortField === 'extCost') return (item.qty || 0) * (item.unitCost || 0);
+        if (sortField === 'extLabor') return (item.qty || 0) * (item.laborHrsPerUnit || 0);
+        if (sortField === 'unitLabor') return item.laborHrsPerUnit;
+        return item[sortField];
+    };
+
+    // A package header renders package-level values in the item columns, so it
+    // sorts by whatever that header row actually shows -- the package name in
+    // the manufacturer column, rolled-up totals in the cost/labor columns.
+    const packageSortValue = (pkg) => {
+        switch (sortField) {
+            case 'model': return pkg.itemCount || 0;
+            case 'description': return pkg.instance?.notes || '';
+            case 'qty': return pkg.qty || 1;
+            case 'unitCost':
+            case 'extCost': return pkg.cost || 0;
+            case 'labor':
+            case 'unitLabor':
+            case 'extLabor': return pkg.labor || 0;
+            // manufacturer, phase and anything else fall back to the package
+            // name, which is the only text the header row carries.
+            default: return pkg.name || '';
+        }
+    };
+
+    const sortItems = (items, getItem) => {
         if (!sortField) return items;
-        return [...items].sort((a, b) => {
-            let aVal = a[sortField];
-            let bVal = b[sortField];
-            if (sortField === 'extCost') { aVal = (a.qty || 0) * (a.unitCost || 0); bVal = (b.qty || 0) * (b.unitCost || 0); }
-            if (sortField === 'extLabor') { aVal = (a.qty || 0) * (a.laborHrsPerUnit || 0); bVal = (b.qty || 0) * (b.laborHrsPerUnit || 0); }
-            if (sortField === 'unitLabor') { aVal = a.laborHrsPerUnit; bVal = b.laborHrsPerUnit; }
-            if (aVal == null) aVal = '';
-            if (bVal == null) bVal = '';
-            if (typeof aVal === 'string') aVal = aVal.toLowerCase();
-            if (typeof bVal === 'string') bVal = bVal.toLowerCase();
-            if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
-            if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
-            return 0;
-        });
+        return [...items].sort((a, b) => compareVals(
+            itemSortValue(getItem ? getItem(a) : a),
+            itemSortValue(getItem ? getItem(b) : b),
+        ));
+    };
+
+    const sortPackages = (pkgs) => {
+        if (!sortField) return pkgs;
+        return [...pkgs].sort((a, b) => compareVals(packageSortValue(a), packageSortValue(b)));
     };
 
     // Resizable columns
@@ -86,7 +120,9 @@ export default function AllLocationsView({
         { id: 'notes', label: 'Notes', width: 120 },
         { id: 'manufacturer', label: 'Manufacturer', width: 120 },
         { id: 'model', label: 'Model', width: 140 },
+        { id: 'partNumber', label: 'Part Number', width: 130 },
         { id: 'description', label: 'Description', width: 200 },
+        { id: 'vendor', label: 'Vendor', width: 120 },
         { id: 'unitCost', label: 'Unit $', width: 80 },
         { id: 'unitLabor', label: 'Unit Hrs', width: 70 },
         { id: 'extCost', label: 'Ext. $', width: 90 },
@@ -245,6 +281,20 @@ export default function AllLocationsView({
         onUpdate(locationId, (items) => {
             const newItems = [...items];
             newItems[itemIdx] = { ...newItems[itemIdx], description };
+            return newItems;
+        });
+    };
+    const changePartNumber = (locationId, itemIdx, partNumber) => {
+        onUpdate(locationId, (items) => {
+            const newItems = [...items];
+            newItems[itemIdx] = { ...newItems[itemIdx], partNumber };
+            return newItems;
+        });
+    };
+    const changeVendor = (locationId, itemIdx, vendor) => {
+        onUpdate(locationId, (items) => {
+            const newItems = [...items];
+            newItems[itemIdx] = { ...newItems[itemIdx], vendor };
             return newItems;
         });
     };
@@ -575,21 +625,9 @@ export default function AllLocationsView({
                     ? filteredStandalone.filter(({ item }) => item.isPlaceholder)
                     : filteredStandalone;
                 if (phaseFilter) visibleStandalone = visibleStandalone.filter(({ item }) => (item.phase || '') === phaseFilter);
-                visibleStandalone = sortField ? [...visibleStandalone].sort((a, b) => {
-                    const itemA = a.item, itemB = b.item;
-                    let aVal = itemA[sortField], bVal = itemB[sortField];
-                    if (sortField === 'extCost') { aVal = (itemA.qty || 0) * (itemA.unitCost || 0); bVal = (itemB.qty || 0) * (itemB.unitCost || 0); }
-                    if (sortField === 'extLabor') { aVal = (itemA.qty || 0) * (itemA.laborHrsPerUnit || 0); bVal = (itemB.qty || 0) * (itemB.laborHrsPerUnit || 0); }
-                    if (sortField === 'unitLabor') { aVal = itemA.laborHrsPerUnit; bVal = itemB.laborHrsPerUnit; }
-                    if (aVal == null) aVal = ''; if (bVal == null) bVal = '';
-                    if (typeof aVal === 'string') aVal = aVal.toLowerCase();
-                    if (typeof bVal === 'string') bVal = bVal.toLowerCase();
-                    if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
-                    if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
-                    return 0;
-                }) : visibleStandalone;
-                const visiblePkgs = filterMode === 'unfinished' ? [] : filteredPkgs;
-                const visibleLegacyPkgs = filterMode === 'unfinished' ? [] : filteredLegacyPkgs;
+                visibleStandalone = sortItems(visibleStandalone, ({ item }) => item);
+                const visiblePkgs = filterMode === 'unfinished' ? [] : sortPackages(filteredPkgs);
+                const visibleLegacyPkgs = filterMode === 'unfinished' ? [] : sortPackages(filteredLegacyPkgs);
                 // Compute visible indices for select-all
                 const visibleIndices = [];
                 visiblePkgs.forEach(pkg => visibleIndices.push(pkg.idx));
@@ -757,14 +795,16 @@ export default function AllLocationsView({
                                                             <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span></td>
                                                             <td style={tdStyle}><span style={{ ...styles.badge('green'), fontSize: '10px' }}>{pkg.itemCount} items &times; {pkg.qty}</span></td>
+                                                            <td style={tdStyle}></td>
                                                             <td style={tdStyle}>{pkg.instance.notes || ''}</td>
+                                                            <td style={tdStyle}></td>
                                                             <td style={tdStyle}></td>
                                                             <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
                                                             <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
                                                             <td style={tdStyle}></td>
                                                         </tr>
-                                                        {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => {
+                                                        {isPkgExpanded && sortItems(pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })), ({ item }) => item).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => {
                                                             const piKey = `${location.id}-${pkg.idx}-${itemIdx}`;
                                                             return (
                                                             <tr key={`pkg-item-${pkg.idx}-${itemIdx}`} style={{ backgroundColor: '#0d1117', borderLeft: `3px solid ${pkgColor.b}` }}
@@ -784,7 +824,9 @@ export default function AllLocationsView({
                                                                 <td style={{ ...tdStyle, fontSize: '10px', color: '#6e767d' }}>{(item.qtyPerPackage || 1)}&times;{pkg.qty}{item._hasOverride ? ' (edited)' : ''}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, color: '#1d9bf0', fontSize: '12px' }}>{item.model}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.partNumber || ''}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.description}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.vendor || ''}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtCost(item.unitCost || 0)}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#6e767d' }}>{fmtHrs(item.laborHrsPerUnit || 0)}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '12px', color: '#00ba7c' }}>{fmtCost((item.qty || 0) * (item.unitCost || 0))}</td>
@@ -811,14 +853,14 @@ export default function AllLocationsView({
                                                                 setSelectedItems(prev => ({ ...prev, [location.id]: allSelected ? (prev[location.id] || []).filter(i => !pkg.indices.includes(i)) : [...new Set([...(prev[location.id] || []), ...pkg.indices])] }));
                                                             }} /></td>
                                                             <td style={tdStyle}><button style={{ ...styles.iconButton, padding: '2px' }} onClick={() => togglePackageExpand(location.id, pkg.name)}>{isPkgExpanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}</button></td>
-                                                            <td colSpan="5" style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> <span style={{ fontSize: '10px', color: '#6e767d' }}>(legacy)</span></td>
+                                                            <td colSpan="7" style={{ ...tdStyle, fontWeight: '700' }}><Icons.Package /> <span style={{ color: pkgColor.b }}>{pkg.name}</span> <span style={{ fontSize: '10px', color: '#6e767d' }}>(legacy)</span></td>
                                                             <td style={tdStyle}></td>
                                                             <td style={tdStyle}></td>
                                                             <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(pkg.cost)}</td>
                                                             <td style={tdStyle}>{fmtHrs(pkg.labor)}</td>
                                                             <td style={tdStyle}></td>
                                                         </tr>
-                                                        {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => ({ item, pkgItemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, pkgItemIdx }) => {
+                                                        {isPkgExpanded && sortItems(pkg.items.map((item, pkgItemIdx) => ({ item, pkgItemIdx })), ({ item }) => item).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, pkgItemIdx }) => {
                                                             const i = pkg.indices[pkgItemIdx];
                                                             const isItemSelected = locationSelected.includes(i);
                                                             const itemTotal = calculateItemTotal(item);
@@ -830,7 +872,9 @@ export default function AllLocationsView({
                                                                     <td style={tdStyle}><input type="text" value={item.notes || ''} onChange={e => changeNotes(location.id, i, e.target.value)} placeholder="..." style={{ ...inputStyle, width: '100%', fontSize: '11px' }} /></td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.manufacturer}</td>
                                                                     <td style={tdStyle}><strong>{item.model}</strong></td>
+                                                                    <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.partNumber || ''}</td>
                                                                     <td style={{ ...tdStyle, fontSize: '12px' }}>{item.description}</td>
+                                                                    <td style={{ ...tdStyle, fontSize: '12px', color: '#8b98a5' }}>{item.vendor || ''}</td>
                                                                     <td style={tdStyle}><input type="text" inputMode="decimal" value={editingCost[`${location.id}-${i}`] !== undefined ? editingCost[`${location.id}-${i}`] : (item.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitCost(location.id, i, e.target.value); }} onBlur={() => blurUnitCost(location.id, i)} onFocus={e => { focusUnitCost(location.id, i, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right' }} /></td>
                                                                     <td style={tdStyle}><input type="text" inputMode="decimal" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitLabor(location.id, i, e.target.value); }} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
                                                                     <td style={{ ...tdStyle, color: '#00ba7c', fontWeight: '600', fontSize: '12px' }}>{fmtCost(itemTotal.cost)}</td>
@@ -881,8 +925,14 @@ export default function AllLocationsView({
                                                                 {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.model || ''} onChange={e => changeModel(location.id, i, e.target.value)} placeholder="Model / Name" style={{ ...inputStyle, width: '100%', fontWeight: '600' }} /> : <strong>{item.model}</strong>}
                                                             </td>
                                                             <td style={{ ...tdStyle, fontSize: '12px' }}>
+                                                                {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.partNumber || ''} onChange={e => changePartNumber(location.id, i, e.target.value)} placeholder="Part #" style={{ ...inputStyle, width: '100%', fontSize: '12px' }} /> : item.partNumber}
+                                                            </td>
+                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>
                                                                 {(item.isPlaceholder || item.isCustom) ? <input type="text" value={item.description || ''} onChange={e => changeDescription(location.id, i, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: '12px' }} /> : item.description}
                                                                 {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
+                                                            </td>
+                                                            <td style={{ ...tdStyle, fontSize: '12px' }}>
+                                                                <input type="text" value={item.vendor || ''} onChange={e => changeVendor(location.id, i, e.target.value)} placeholder="Vendor" style={{ ...inputStyle, width: '100%', fontSize: '12px' }} />
                                                             </td>
                                                             <td style={tdStyle}><input type="text" inputMode="decimal" value={editingCost[`${location.id}-${i}`] !== undefined ? editingCost[`${location.id}-${i}`] : (item.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitCost(location.id, i, e.target.value); }} onBlur={() => blurUnitCost(location.id, i)} onFocus={e => { focusUnitCost(location.id, i, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right' }} /></td>
                                                             <td style={tdStyle}><input type="text" inputMode="decimal" value={editingLabor[`${location.id}-${i}`] !== undefined ? editingLabor[`${location.id}-${i}`] : (item.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitLabor(location.id, i, e.target.value); }} onBlur={() => blurUnitLabor(location.id, i)} onFocus={e => { focusUnitLabor(location.id, i, item.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right' }} /></td>
@@ -910,7 +960,9 @@ export default function AllLocationsView({
                                                                 </td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>&boxuR; {acc.manufacturer}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.model}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.partNumber || ''}</td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.description}</td>
+                                                                <td style={{ ...tdStyle, fontSize: '11px', color: '#8b98a5' }}>{acc.vendor || ''}</td>
                                                                 <td style={tdStyle}><input type="text" inputMode="decimal" value={editingAccCost[accCostKey] !== undefined ? editingAccCost[accCostKey] : (acc.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccCost(location.id, i, accIdx, e.target.value); }} onBlur={() => blurAccCost(location.id, i, accIdx)} onFocus={e => { focusAccCost(location.id, i, accIdx, acc.unitCost); e.target.select(); }} style={{ ...inputStyle, width: '70px', textAlign: 'right', fontSize: '10px' }} /></td>
                                                                 <td style={tdStyle}><input type="text" inputMode="decimal" value={editingAccLabor[accLaborKey] !== undefined ? editingAccLabor[accLaborKey] : (acc.laborHrsPerUnit || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccLabor(location.id, i, accIdx, e.target.value); }} onBlur={() => blurAccLabor(location.id, i, accIdx)} onFocus={e => { focusAccLabor(location.id, i, accIdx, acc.laborHrsPerUnit); e.target.select(); }} style={{ ...inputStyle, width: '60px', textAlign: 'right', fontSize: '10px' }} /></td>
                                                                 <td style={{ ...tdStyle, fontSize: '11px', color: '#6e9e6e' }}>{fmtCost((acc.qty || 0) * (acc.unitCost || 0))}</td>
@@ -1098,6 +1150,15 @@ export default function AllLocationsView({
                                         onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                                         onClick={() => { onUpdateFromCatalog(item, contextMenu.locationId, contextMenu.itemIdx); setContextMenu(null); }}>
                                         <Icons.Sync /> Update from Catalog
+                                    </button>
+                                )}
+                                {onUpdateToCatalog && !item?.isPlaceholder && (
+                                    <button
+                                        style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#1d9bf0' }}
+                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                        onClick={() => { onUpdateToCatalog(item, contextMenu.locationId, contextMenu.itemIdx); setContextMenu(null); }}>
+                                        <Icons.Database /> Update to Catalog
                                     </button>
                                 )}
                                 <button

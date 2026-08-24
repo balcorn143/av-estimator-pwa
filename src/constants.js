@@ -55,6 +55,44 @@ export const PROJECT_STATUSES = {
     archived: { label: 'Archived', color: '#6e767d', bg: '#1a1f26' },
 };
 
+// Kanban board columns for the per-project PM task board. Order matters —
+// rendered left-to-right.
+export const TASK_STATUSES = {
+    todo:        { key: 'todo',        label: 'To Do',       color: '#8b98a5', bg: '#1a1f26' },
+    in_progress: { key: 'in_progress', label: 'In Progress', color: '#1d9bf0', bg: '#1d3a5c' },
+    blocked:     { key: 'blocked',     label: 'Blocked',     color: '#f87171', bg: '#3d1a1a' },
+    done:        { key: 'done',        label: 'Done',        color: '#00ba7c', bg: '#1a3d2e' },
+};
+export const TASK_STATUS_ORDER = ['todo', 'in_progress', 'blocked', 'done'];
+
+// Phase buckets — high-level groupings used as tags on task cards. Lifecycle
+// order from kickoff to closeout.
+export const TASK_PHASE_BUCKETS = {
+    'pre-construction': { label: 'Pre-Construction', color: '#f59e0b', bg: '#3d2e1a' },
+    'procurement':      { label: 'Procurement',      color: '#a78bfa', bg: '#2d1a3d' },
+    'install':          { label: 'Install',          color: '#1d9bf0', bg: '#1d3a5c' },
+    'commissioning':    { label: 'Commissioning',    color: '#06b6d4', bg: '#1a3340' },
+    'closeout':         { label: 'Closeout',         color: '#00ba7c', bg: '#1a3d2e' },
+};
+
+// Fixed task template seeded when a project's status first flips to 'active'.
+// Each entry becomes a fully-instantiated task on the project — PMs can add,
+// rename, reorder, or delete freely after seeding.
+export const DEFAULT_PM_TASKS = [
+    { title: 'Internal kickoff / estimator handoff', phaseBucket: 'pre-construction' },
+    { title: 'Client kickoff meeting',               phaseBucket: 'pre-construction' },
+    { title: 'Submittals package',                   phaseBucket: 'pre-construction' },
+    { title: 'Shop drawings / signal flow',          phaseBucket: 'pre-construction' },
+    { title: 'POs issued',                           phaseBucket: 'procurement' },
+    { title: 'Equipment received & staged',          phaseBucket: 'procurement' },
+    { title: 'Rough-in install',                     phaseBucket: 'install' },
+    { title: 'Trim-out install',                     phaseBucket: 'install' },
+    { title: 'Finish install',                       phaseBucket: 'install' },
+    { title: 'Programming',                          phaseBucket: 'commissioning' },
+    { title: 'Commissioning & client training',      phaseBucket: 'commissioning' },
+    { title: 'Punch list + as-builts + final invoice', phaseBucket: 'closeout' },
+];
+
 export const DEFAULT_COLUMNS = [
     { id: 'checkbox', label: '', width: 40, fixed: true },
     { id: 'expand', label: '', width: 30, fixed: true },
@@ -62,7 +100,9 @@ export const DEFAULT_COLUMNS = [
     { id: 'notes', label: 'Notes', width: 120 },
     { id: 'manufacturer', label: 'Manufacturer', width: 120 },
     { id: 'model', label: 'Model', width: 140 },
+    { id: 'partNumber', label: 'Part Number', width: 130 },
     { id: 'description', label: 'Description', width: 200 },
+    { id: 'vendor', label: 'Vendor', width: 120 },
     { id: 'unitCost', label: 'Unit Cost', width: 80 },
     { id: 'unitLabor', label: 'Unit Labor', width: 80 },
     { id: 'extCost', label: 'Ext. Cost', width: 90 },

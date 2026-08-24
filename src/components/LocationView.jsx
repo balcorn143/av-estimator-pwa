@@ -9,7 +9,7 @@ import { PHASE_OPTIONS, DEFAULT_COLUMNS } from '../constants'
 import ColumnLayoutManager from './ColumnLayoutManager'
 import useFlexibleColumns from '../hooks/useFlexibleColumns'
 
-export default function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, onUpdateFromCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage, searchFilter, onEditPackage }) {
+export default function LocationView({ location, depth, locationPath, onUpdate, onSearch, clipboard, onCopy, onPaste, onSavePackage, onSaveTemplate, onApplyTemplate, templates, catalog, onAddAccessoryToItem, onConvertToAccessory, onUngroupPackage, onMoveToPackage, compactMode, onAddToCatalog, onUpdateFromCatalog, onUpdateToCatalog, catalogPkgs, projectPkgs, onReplaceItem, onReplacePackage, searchFilter, onEditPackage }) {
     const [selectedItems, setSelectedItems] = useState([]);
     const [expandedItems, setExpandedItems] = useState({}); // Track which items are expanded (by index)
     const [expandedPackages, setExpandedPackages] = useState({}); // Track which packages are expanded
@@ -33,24 +33,55 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
         return sortDir === 'asc' ? <Icons.ChevronUp /> : <Icons.ChevronDown />;
     };
 
+    // Shared comparator so items, package headers and package contents all
+    // order the same way for a given column + direction.
+    const compareVals = (aVal, bVal) => {
+        if (aVal == null) aVal = '';
+        if (bVal == null) bVal = '';
+        if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+        if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+        if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+    };
+
+    const itemSortValue = (item) => {
+        if (sortField === 'extCost') return (item.qty || 0) * (item.unitCost || 0);
+        if (sortField === 'extLabor') return (item.qty || 0) * (item.laborHrsPerUnit || 0);
+        if (sortField === 'unitLabor') return item.laborHrsPerUnit;
+        return item[sortField];
+    };
+
+    // A package header renders package-level values in the item columns, so it
+    // sorts by whatever that header row actually shows -- the package name in
+    // the manufacturer column, rolled-up totals in the cost/labor columns.
+    const packageSortValue = (pkg) => {
+        switch (sortField) {
+            case 'model': return pkg.itemCount || 0;
+            case 'description': return pkg.instance?.notes || '';
+            case 'qty': return pkg.qty || 1;
+            case 'unitCost':
+            case 'extCost': return pkg.cost || 0;
+            case 'labor':
+            case 'unitLabor':
+            case 'extLabor': return pkg.labor || 0;
+            // manufacturer, phase and anything else fall back to the package
+            // name, which is the only text the header row carries.
+            default: return pkg.name || '';
+        }
+    };
+
     const sortItems = (items, getItem) => {
         if (!sortField) return items;
-        return [...items].sort((a, b) => {
-            const itemA = getItem ? getItem(a) : a;
-            const itemB = getItem ? getItem(b) : b;
-            let aVal = itemA[sortField];
-            let bVal = itemB[sortField];
-            if (sortField === 'extCost') { aVal = (itemA.qty || 0) * (itemA.unitCost || 0); bVal = (itemB.qty || 0) * (itemB.unitCost || 0); }
-            if (sortField === 'extLabor') { aVal = (itemA.qty || 0) * (itemA.laborHrsPerUnit || 0); bVal = (itemB.qty || 0) * (itemB.laborHrsPerUnit || 0); }
-            if (sortField === 'unitLabor') { aVal = itemA.laborHrsPerUnit; bVal = itemB.laborHrsPerUnit; }
-            if (aVal == null) aVal = '';
-            if (bVal == null) bVal = '';
-            if (typeof aVal === 'string') aVal = aVal.toLowerCase();
-            if (typeof bVal === 'string') bVal = bVal.toLowerCase();
-            if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
-            if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
-            return 0;
-        });
+        return [...items].sort((a, b) => compareVals(
+            itemSortValue(getItem ? getItem(a) : a),
+            itemSortValue(getItem ? getItem(b) : b),
+        ));
+    };
+
+    const sortPackages = (pkgs) => {
+        if (!sortField) return pkgs;
+        return [...pkgs].sort((a, b) => compareVals(packageSortValue(a), packageSortValue(b)));
     };
 
     // Compact mode styles
@@ -104,10 +135,18 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                 return <td key={col.id} style={tdStyle}>
                     <input type="text" value={item.model || ''} onChange={e => changeModel(itemIdx, e.target.value)} placeholder="Model / Name" style={{ ...inputStyle, width: '100%', fontWeight: '600' }} />
                 </td>;
+            case 'partNumber':
+                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>
+                    <input type="text" value={item.partNumber || ''} onChange={e => changePartNumber(itemIdx, e.target.value)} placeholder="Part #" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} />
+                </td>;
             case 'description':
                 return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>
                     <input type="text" value={item.description || ''} onChange={e => changeDescription(itemIdx, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} />
                     {hasAccessories && <span style={{ ...styles.badge('orange'), marginLeft: '6px', fontSize: '9px' }}>{item.accessories.length}</span>}
+                </td>;
+            case 'vendor':
+                return <td key={col.id} style={{ ...tdStyle, fontSize: compactMode ? '11px' : '12px' }}>
+                    <input type="text" value={item.vendor || ''} onChange={e => changeVendor(itemIdx, e.target.value)} placeholder="Vendor" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '11px' : '12px' }} />
                 </td>;
             case 'unitCost':
                 return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingCost[itemIdx] !== undefined ? editingCost[itemIdx] : (item.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeUnitCost(itemIdx, e.target.value); }} onBlur={() => blurUnitCost(itemIdx)} onFocus={e => { focusUnitCost(itemIdx, item.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right' }} /></td>;
@@ -143,8 +182,12 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                 return <td key={col.id} style={tdStyle}><span style={{ color: '#4a5568' }}>└ </span><input type="text" value={acc.manufacturer || ''} onChange={e => changeAccessoryManufacturer(itemIdx, accIdx, e.target.value)} placeholder="Manufacturer" style={{ ...inputStyle, width: 'calc(100% - 16px)', fontSize: compactMode ? '10px' : '11px' }} /></td>;
             case 'model':
                 return <td key={col.id} style={tdStyle}><input type="text" value={acc.model || ''} onChange={e => changeAccessoryModel(itemIdx, accIdx, e.target.value)} placeholder="Model" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '10px' : '11px' }} /></td>;
+            case 'partNumber':
+                return <td key={col.id} style={tdStyle}><input type="text" value={acc.partNumber || ''} onChange={e => changeAccessoryPartNumber(itemIdx, accIdx, e.target.value)} placeholder="Part #" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
             case 'description':
                 return <td key={col.id} style={tdStyle}><input type="text" value={acc.description || ''} onChange={e => changeAccessoryDescription(itemIdx, accIdx, e.target.value)} placeholder="Description" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
+            case 'vendor':
+                return <td key={col.id} style={tdStyle}><input type="text" value={acc.vendor || ''} onChange={e => changeAccessoryVendor(itemIdx, accIdx, e.target.value)} placeholder="Vendor" style={{ ...inputStyle, width: '100%', fontSize: compactMode ? '9px' : '10px' }} /></td>;
             case 'unitCost': {
                 const accKey = `${itemIdx}-${accIdx}`;
                 return <td key={col.id} style={tdStyle}><input type="text" inputMode="decimal" value={editingAccCost[accKey] !== undefined ? editingAccCost[accKey] : (acc.unitCost || 0)} onChange={e => { if (/^\d*\.?\d*$/.test(e.target.value)) changeAccessoryUnitCost(itemIdx, accIdx, e.target.value); }} onBlur={() => blurAccessoryUnitCost(itemIdx, accIdx)} onFocus={e => { focusAccCost(itemIdx, accIdx, acc.unitCost); e.target.select(); }} style={{ ...inputStyle, width: compactMode ? '70px' : '80px', textAlign: 'right', fontSize: compactMode ? '10px' : '11px' }} /></td>;
@@ -261,8 +304,8 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                 item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter))
             )
         );
-        return pkgs;
-    }, [groupedItems.packages, searchFilter]);
+        return sortPackages(pkgs);
+    }, [groupedItems.packages, searchFilter, sortField, sortDir]);
     const filteredLegacyPackages = useMemo(() => {
         let pkgs = groupedItems.legacyPackages;
         if (searchFilter) pkgs = pkgs.filter(pkg =>
@@ -271,8 +314,8 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                 item.accessories?.some(acc => itemMatchesSearch(acc, searchFilter))
             )
         );
-        return pkgs;
-    }, [groupedItems.legacyPackages, searchFilter]);
+        return sortPackages(pkgs);
+    }, [groupedItems.legacyPackages, searchFilter, sortField, sortDir]);
 
     // Helper for render: does an item or any of its accessories match the search?
     const itemOrAccsMatch = (item) =>
@@ -367,6 +410,16 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     const changeDescription = (itemIdx, description) => {
         const items = [...location.items];
         items[itemIdx] = { ...items[itemIdx], description };
+        onUpdate(location.id, items);
+    };
+    const changeVendor = (itemIdx, vendor) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], vendor };
+        onUpdate(location.id, items);
+    };
+    const changePartNumber = (itemIdx, partNumber) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], partNumber };
         onUpdate(location.id, items);
     };
 
@@ -485,6 +538,16 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
     const changeAccessoryDescription = (itemIdx, accIdx, description) => {
         const items = [...location.items];
         items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, description } : a) };
+        onUpdate(location.id, items);
+    };
+    const changeAccessoryVendor = (itemIdx, accIdx, vendor) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, vendor } : a) };
+        onUpdate(location.id, items);
+    };
+    const changeAccessoryPartNumber = (itemIdx, accIdx, partNumber) => {
+        const items = [...location.items];
+        items[itemIdx] = { ...items[itemIdx], accessories: items[itemIdx].accessories.map((a, i) => i === accIdx ? { ...a, partNumber } : a) };
         onUpdate(location.id, items);
     };
 
@@ -892,7 +955,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                             </tr>
 
                                             {/* Expanded package items */}
-                                            {isPkgExpanded && pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => {
+                                            {isPkgExpanded && sortItems(pkg.expandedItems.map((item, itemIdx) => ({ item, itemIdx })), ({ item }) => item).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, itemIdx }) => {
                                                 const eKey = `${pkg.idx}-${itemIdx}`;
                                                 const inpS = { ...styles.inputSmall, ...compactStyles.input };
                                                 return (
@@ -943,6 +1006,8 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                                 style={{ ...inpS, width: compactMode ? '55px' : '65px', textAlign: 'right', color: item._hasLaborOverride ? '#f59e0b' : '#8b98a5' }}
                                                             />
                                                         </td>;
+                                                        if (col.id === 'vendor') return <td key={col.id} style={{ ...tdS, fontSize: compactMode ? '10px' : '11px' }}>{item.vendor || ''}</td>;
+                                                        if (col.id === 'partNumber') return <td key={col.id} style={{ ...tdS, fontSize: compactMode ? '10px' : '11px' }}>{item.partNumber || ''}</td>;
                                                         if (col.id === 'extCost') return <td key={col.id} style={{ ...tdS, color: '#00ba7c' }}>{fmtCost((item.qty || 0) * (item.unitCost || 0))}</td>;
                                                         if (col.id === 'extLabor' || col.id === 'labor') return <td key={col.id} style={tdS}>{fmtHrs((item.qty || 0) * (item.laborHrsPerUnit || 0))}</td>;
                                                         return <td key={col.id} style={tdS}></td>;
@@ -983,7 +1048,7 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                                     return <td key={col.id} style={tdS}></td>;
                                                 })}
                                             </tr>
-                                            {isPkgExpanded && pkg.items.map((item, pkgItemIdx) => ({ item, pkgItemIdx })).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, pkgItemIdx }) => {
+                                            {isPkgExpanded && sortItems(pkg.items.map((item, pkgItemIdx) => ({ item, pkgItemIdx })), ({ item }) => item).filter(({ item }) => !searchFilter || itemOrAccsMatch(item)).map(({ item, pkgItemIdx }) => {
                                                 const i = pkg.indices[pkgItemIdx];
                                                 const isItemSelected = selectedItems.includes(i);
                                                 const itemTotal = calculateItemTotal(item);
@@ -1236,6 +1301,15 @@ export default function LocationView({ location, depth, locationPath, onUpdate, 
                                     onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                                     onClick={() => { onUpdateFromCatalog(location.items[contextMenu.itemIdx], location.id, contextMenu.itemIdx); setContextMenu(null); }}>
                                     <Icons.Sync /> Update from Catalog
+                                </button>
+                            )}
+                            {onUpdateToCatalog && !location.items[contextMenu.itemIdx]?.isPlaceholder && (
+                                <button
+                                    style={{ ...styles.smallButton, width: '100%', justifyContent: 'flex-start', backgroundColor: 'transparent', padding: '8px 12px', color: '#1d9bf0' }}
+                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2f3336'}
+                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                    onClick={() => { onUpdateToCatalog(location.items[contextMenu.itemIdx], location.id, contextMenu.itemIdx); setContextMenu(null); }}>
+                                    <Icons.Database /> Update to Catalog
                                 </button>
                             )}
                             <button

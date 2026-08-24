@@ -51,7 +51,7 @@ const getAvatarColor = (email) => {
 };
 
 
-export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, onCreateRevision, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout, onForceCheckin, selectedProjectId, onSelectProject, packages }) {
+export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreate, onOpenCatalog, onOpenTeam, team, checkouts, onEdit, onDuplicate, onDelete, onUpdateStatus, onCreateRevision, getProjectTotals, searchTerm, onSearchChange, filter, onFilterChange, session, syncStatus, onLogout, onForceCheckin, selectedProjectId, onSelectProject, packages, currentView, onSwitchView }) {
     const [contextMenu, setContextMenu] = useState(null);
     const [confirmDelete, setConfirmDelete] = useState(null);
     const [sortCol, setSortCol] = useState('updatedAt');
@@ -150,9 +150,17 @@ export default function ProjectsHome({ projects, onOpen, onOpenRevision, onCreat
         <div style={{ minHeight: '100vh', backgroundColor: '#0f1419' }}>
             {/* Header */}
             <header style={{ ...styles.header, borderBottom: '1px solid #2f3336', justifyContent: 'space-between' }}>
-                <div style={styles.logo}>
-                    <Icons.Layers /> AV Estimator
-                    <span style={{ fontSize: '10px', color: '#4a5568', fontWeight: '400', marginLeft: '4px', alignSelf: 'flex-end', marginBottom: '2px' }}>v{APP_VERSION}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+                    <div style={styles.logo}>
+                        <Icons.Layers /> AV Estimator
+                        <span style={{ fontSize: '10px', color: '#4a5568', fontWeight: '400', marginLeft: '4px', alignSelf: 'flex-end', marginBottom: '2px' }}>v{APP_VERSION}</span>
+                    </div>
+                    {onSwitchView && (
+                        <nav style={styles.nav}>
+                            <button style={styles.navButton(currentView === 'estimating')} onClick={() => onSwitchView('estimating')}>Estimating</button>
+                            <button style={styles.navButton(currentView === 'pm')} onClick={() => onSwitchView('pm')}>Project Management</button>
+                        </nav>
+                    )}
                 </div>
                 {session && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

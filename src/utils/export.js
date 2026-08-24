@@ -17,7 +17,7 @@ export function generateEsticomWorkbook(location, catalogPkgs, projectPkgs) {
         } else {
             partMap[key] = {
                 qty: item.qty || 0,
-                name: item.model || '',
+                name: item.description || item.model || '',
                 manufacturer: item.manufacturer || '',
                 supplier: item.vendor || '',
                 partNumber: item.partNumber || '',
@@ -34,7 +34,7 @@ export function generateEsticomWorkbook(location, catalogPkgs, projectPkgs) {
                 } else {
                     partMap[accKey] = {
                         qty: acc.qty || 0,
-                        name: acc.model || '',
+                        name: acc.description || acc.model || '',
                         manufacturer: acc.manufacturer || '',
                         supplier: acc.vendor || '',
                         partNumber: acc.partNumber || '',

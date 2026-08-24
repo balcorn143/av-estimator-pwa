@@ -6,6 +6,11 @@ body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; }
 ::-webkit-scrollbar-thumb { background: #2f3336; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #404447; }
 input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #1d9bf0; }
+/* Quantity fields are typed into, never stepped — drop the spinners so the
+   full number stays visible in narrow table columns. */
+input.qty-input { -moz-appearance: textfield; appearance: textfield; }
+input.qty-input::-webkit-outer-spin-button,
+input.qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 h1, h2, h3, h4, h5, h6, p, span, label, div { color: inherit; }
 body { color: #e7e9ea; }
 input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cursor: pointer; }

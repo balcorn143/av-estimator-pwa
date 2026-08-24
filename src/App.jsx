@@ -11,7 +11,9 @@ import { loadCatalog as loadCatalogFromDb, upsertItem as upsertCatalogItemRemote
 import { loadPackages as loadPackagesFromDb, upsertPackage as upsertPackageRemote, deletePackage as deletePackageRemote, bulkUpsertPackages as bulkUpsertPackagesRemote, rowToPackage as packageRowToPackage } from './utils/packagesStore'
 import { loadTeamSettings, upsertTeamSettings } from './utils/teamSettingsStore'
 import { generatePackageId, resolvePackageInstance, findAllPackageInstances, getFlattenedItems } from './utils/packages'
+import { buildDefaultTasks } from './utils/pmTasks'
 import { generateEsticomWorkbook, generateProcoreEstimateWorkbook } from './utils/export'
+import { parseEsticomWorkbook } from './utils/esticomImport'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -22,6 +24,9 @@ import MoveLocationModal from './components/MoveLocationModal'
 import LocationView from './components/LocationView'
 import AllLocationsView from './components/AllLocationsView'
 import ProjectsHome from './components/ProjectsHome'
+import TakeoffTab from './components/TakeoffTab'
+import PMHome from './components/PMHome'
+import ProjectBoard from './components/ProjectBoard'
 import SearchModal from './components/SearchModal'
 import AddLocationModal from './components/AddLocationModal'
 import DuplicateModal from './components/DuplicateModal'
@@ -41,6 +46,7 @@ import CatalogItemModal from './components/CatalogItemModal'
 import PackagesView from './components/PackagesView'
 import CatalogConflictModal from './components/CatalogConflictModal'
 import LaborByPhaseReport from './components/LaborByPhaseReport'
+import ImportEsticomModal from './components/ImportEsticomModal'
 
 export default function App() {
     // Auth state
@@ -115,6 +121,12 @@ export default function App() {
     const [revisionPromptManualCreate, setRevisionPromptManualCreate] = useState(false);
     const [projectSearchTerm, setProjectSearchTerm] = useState('');
     const [projectFilter, setProjectFilter] = useState('all');
+
+    // Top-level dashboard view. 'estimating' shows ProjectsHome (the pipeline
+    // table). 'pm' shows PMHome (kanban of active projects); selecting one
+    // sets pmBoardProjectId which renders the per-project ProjectBoard.
+    const [appView, setAppView] = useState('estimating');
+    const [pmBoardProjectId, setPmBoardProjectId] = useState(null);
     
     // Current project state (when a project is open)
     const [tab, setTab] = useState('project');
@@ -518,16 +530,19 @@ export default function App() {
         { id: 'model', label: 'Model', width: 120 },
         { id: 'partNumber', label: 'Part Number', width: 130 },
         { id: 'description', label: 'Description', width: 220 },
+        { id: 'vendor', label: 'Vendor', width: 140 },
         { id: 'phase', label: 'Phase', width: 150 },
         { id: 'unitCost', label: 'Unit Cost', width: 90 },
         { id: 'laborHrsPerUnit', label: 'Unit Labor', width: 90 },
         { id: 'extCost', label: 'Ext. Cost', width: 90 },
         { id: 'extLabor', label: 'Ext. Labor', width: 90 },
+        { id: 'actions', label: '', width: 110 },
     ]);
 
     // Report state
     const [showLaborByPhase, setShowLaborByPhase] = useState(true);
     const [reportHierarchyDepth, setReportHierarchyDepth] = useState(-1);
+    const [esticomPreview, setEsticomPreview] = useState(null); // { parsed, fileName } for the Esticom import modal
     const [showBom, setShowBom] = useState(true);
 
     const [bomSortField, setBomSortField] = useState(null);
@@ -865,11 +880,20 @@ export default function App() {
         showToast('Project deleted');
     };
     
-    // Update project status
+    // Update project status. First transition to 'active' seeds the PM task
+    // board from DEFAULT_PM_TASKS — the pmTemplateApplied flag makes that
+    // idempotent so toggling back to active later doesn't wipe edits.
     const updateProjectStatus = (projectId, newStatus) => {
-        setProjects(prev => prev.map(p =>
-            p.id === projectId ? { ...p, status: newStatus, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' } : p
-        ));
+        setProjects(prev => prev.map(p => {
+            if (p.id !== projectId) return p;
+            const next = { ...p, status: newStatus, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' };
+            if (newStatus === 'active' && !p.pmTemplateApplied) {
+                next.tasks = buildDefaultTasks();
+                next.pmTemplateApplied = true;
+                next.pmStartedAt = new Date().toISOString();
+            }
+            return next;
+        }));
     };
 
     // Create revision from dashboard context menu
@@ -1301,6 +1325,34 @@ export default function App() {
         }
     };
 
+    // Import an Esticom estimate export (.xlsx). Read + parse, then hand the
+    // parsed locations to the preview modal; nothing changes until Apply.
+    const handleEsticomFile = async (file) => {
+        if (!file) return;
+        if (!isProjectEditable()) return;
+        try {
+            const buf = await file.arrayBuffer();
+            const parsed = parseEsticomWorkbook(new Uint8Array(buf));
+            if (!parsed.locations.length) {
+                showToast('No locations found in that Esticom file', 'warning');
+                return;
+            }
+            setEsticomPreview({ parsed, fileName: file.name });
+        } catch (err) {
+            showToast(err.message || 'Could not read that file', 'error');
+        }
+    };
+
+    // Overwrite the active project's locations with the chosen import. The user
+    // is expected to create a revision beforehand if they want a restore point.
+    const applyEsticomImport = (importedLocations) => {
+        const cloned = JSON.parse(JSON.stringify(importedLocations));
+        const ok = setProject(p => ({ ...p, locations: cloned }));
+        if (ok === false) return;
+        setEsticomPreview(null);
+        showToast(`Imported ${cloned.length} location${cloned.length === 1 ? '' : 's'} from Esticom`);
+    };
+
     const buildConsolidatedBOMSheet = (locsList) => {
         const partMap = {};
         for (const location of locsList) {
@@ -1539,6 +1591,61 @@ export default function App() {
         if (!isProjectEditable()) return;
         // Only push the catalog packages that actually changed (one or more
         // items inside matched partKey). Diffing avoids no-op writes.
+        const changedCatalogPkgs = packages
+            .map(pkg => {
+                const updated = updatePkgItems([pkg])[0];
+                return updated !== pkg && JSON.stringify(updated.items) !== JSON.stringify(pkg.items)
+                    ? updated : null;
+            })
+            .filter(Boolean);
+        if (changedCatalogPkgs.length > 0) {
+            bulkUpsertCatalogPackages(changedCatalogPkgs);
+        }
+        setProject(p => ({
+            ...p,
+            locations: updateLocs(p.locations),
+            packages: p.packages ? updatePkgItems(p.packages) : p.packages,
+        }));
+    };
+
+    // Update a free-text field (e.g. vendor) across all matching items in all
+    // locations and package definitions. Mirrors updateConsolidatedField but for strings.
+    const updateConsolidatedTextField = (partKey, field, value) => {
+        setBomEditingValue(value);
+        if (!isProjectEditable()) return;
+        const updateLocs = (locs) => locs.map(loc => {
+            let items = loc.items;
+            if (items) {
+                items = items.map(item => {
+                    if (item.type === 'package') return item; // Package instances inherit from the definition
+                    const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
+                    let updatedItem = itemKey === partKey ? { ...item, [field]: value } : item;
+                    if (updatedItem.accessories) {
+                        updatedItem = { ...updatedItem, accessories: updatedItem.accessories.map(acc => {
+                            const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                            return accKey === partKey ? { ...acc, [field]: value } : acc;
+                        })};
+                    }
+                    return updatedItem;
+                });
+            }
+            const children = loc.children ? updateLocs(loc.children) : loc.children;
+            return { ...loc, items, children };
+        });
+        const updatePkgItems = (pkgs) => pkgs.map(pkg => ({
+            ...pkg,
+            items: (pkg.items || []).map(item => {
+                const itemKey = item.partNumber || (item.manufacturer + '|' + item.model);
+                let updatedItem = itemKey === partKey ? { ...item, [field]: value } : item;
+                if (updatedItem.accessories) {
+                    updatedItem = { ...updatedItem, accessories: updatedItem.accessories.map(acc => {
+                        const accKey = acc.partNumber || (acc.manufacturer + '|' + acc.model);
+                        return accKey === partKey ? { ...acc, [field]: value } : acc;
+                    })};
+                }
+                return updatedItem;
+            }),
+        }));
         const changedCatalogPkgs = packages
             .map(pkg => {
                 const updated = updatePkgItems([pkg])[0];
@@ -1918,6 +2025,16 @@ export default function App() {
         if (selected?.id === id) setSelected(s => ({ ...s, items }));
     };
 
+    // Persist takeoff data (markers, page scales, pdf metadata) into the
+    // project. The raw PDF lives in Supabase Storage; only this lightweight
+    // state rides in the synced project JSON.
+    const updateTakeoff = (updater) => {
+        setProject(p => ({
+            ...p,
+            takeoff: typeof updater === 'function' ? updater(p.takeoff || {}) : updater,
+        }));
+    };
+
     const renameLocation = (id, newName) => {
         const upd = locs => locs.map(l => l.id === id ? { ...l, name: newName } : l.children ? { ...l, children: upd(l.children) } : l);
         if (!setProject(p => ({ ...p, locations: upd(p.locations) }))) return;
@@ -2225,6 +2342,36 @@ export default function App() {
         showToast(`Updated "${catalogItem.manufacturer} ${catalogItem.model}" from catalog`);
     };
 
+    // Push the project item's current field values back to the matching catalog
+    // entry (the inverse of handleUpdateFromCatalog). Project-specific fields
+    // (qty, notes, phase, accessories) are not written to the catalog.
+    const handleUpdateToCatalog = (item, locationId, itemIdx) => {
+        const catalogItem = catalog.find(c => !c.deleted && (
+            c.id === item.id ||
+            (c.partNumber && item.partNumber && c.partNumber === item.partNumber) ||
+            (c.manufacturer === item.manufacturer && c.model === item.model)
+        ));
+        if (!catalogItem) {
+            showToast('No matching catalog item found');
+            return;
+        }
+        const updated = {
+            ...catalogItem,
+            manufacturer: item.manufacturer ?? catalogItem.manufacturer,
+            model: item.model ?? catalogItem.model,
+            partNumber: item.partNumber ?? catalogItem.partNumber,
+            description: item.description ?? catalogItem.description,
+            category: item.category ?? catalogItem.category,
+            subcategory: item.subcategory ?? catalogItem.subcategory,
+            unitCost: item.unitCost ?? catalogItem.unitCost,
+            laborHrsPerUnit: item.laborHrsPerUnit ?? catalogItem.laborHrsPerUnit,
+            uom: item.uom ?? catalogItem.uom,
+            vendor: item.vendor ?? catalogItem.vendor,
+        };
+        upsertCatalogItem(updated);
+        showToast(`Updated "${updated.manufacturer} ${updated.model}" in catalog`);
+    };
+
     // Replace item handlers
     const handleReplaceItem = (itemIdx, locationId) => {
         const loc = findLocation(project.locations, locationId || selected?.id);
@@ -2402,8 +2549,90 @@ export default function App() {
         return <LoginScreen onAuth={setSession} />;
     }
 
+    // PM mode: generic project patch. Tabs (kanban, procurement, field log,
+    // punch list, change orders) all merge their slice of state through here
+    // so updates ride the existing debounced auto-save.
+    const patchProject = (projectId, patch) => {
+        setProjects(prev => prev.map(p =>
+            p.id === projectId
+                ? { ...p, ...patch, updatedAt: new Date().toISOString(), updatedBy: session?.user?.email || '' }
+                : p
+        ));
+    };
+
     // Show projects home if no project is open
     if (showProjectsHome) {
+        // PM view branches off here. The board view drills into a single project's
+        // task kanban; the list view shows every active project.
+        if (appView === 'pm' && !showDashboardCatalog) {
+            if (pmBoardProjectId) {
+                const boardProject = projects.find(p => p.id === pmBoardProjectId);
+                if (!boardProject) {
+                    // Project deleted while open — bail back to PM list.
+                    setPmBoardProjectId(null);
+                    return null;
+                }
+                return (
+                    <>
+                        <ProjectBoard
+                            project={boardProject}
+                            onPatchProject={(patch) => patchProject(boardProject.id, patch)}
+                            onEditProject={(p) => setEditingProject(p)}
+                            catalogPackages={packages}
+                            onBack={() => setPmBoardProjectId(null)}
+                            currentView={appView}
+                            onSwitchView={(v) => { setPmBoardProjectId(null); setAppView(v); }}
+                            session={session}
+                            syncStatus={syncStatus}
+                            team={team}
+                            onOpenTeam={() => setShowTeamModal(true)}
+                            onLogout={() => { supabase && supabase.auth.signOut(); }}
+                        />
+                        {editingProject && (
+                            <EditProjectModal
+                                project={editingProject}
+                                onClose={() => setEditingProject(null)}
+                                onSave={(updatedProject) => {
+                                    saveProject(updatedProject);
+                                    setEditingProject(null);
+                                }}
+                            />
+                        )}
+                        {showTeamModal && (
+                            <TeamModal
+                                team={team}
+                                session={session}
+                                onClose={() => setShowTeamModal(false)}
+                                onTeamUpdate={(newTeam) => { setTeam(newTeam); if (newTeam) showToast(`Team: ${newTeam.name}`); }}
+                            />
+                        )}
+                    </>
+                );
+            }
+            return (
+                <>
+                    <PMHome
+                        projects={projects}
+                        onOpenBoard={setPmBoardProjectId}
+                        currentView={appView}
+                        onSwitchView={setAppView}
+                        session={session}
+                        syncStatus={syncStatus}
+                        team={team}
+                        onOpenTeam={() => setShowTeamModal(true)}
+                        onLogout={() => { supabase && supabase.auth.signOut(); }}
+                    />
+                    {showTeamModal && (
+                        <TeamModal
+                            team={team}
+                            session={session}
+                            onClose={() => setShowTeamModal(false)}
+                            onTeamUpdate={(newTeam) => { setTeam(newTeam); if (newTeam) showToast(`Team: ${newTeam.name}`); }}
+                        />
+                    )}
+                </>
+            );
+        }
         if (showDashboardCatalog) {
             return (
                 <div style={styles.app}>
@@ -2473,6 +2702,8 @@ export default function App() {
                     selectedProjectId={selectedProjectId}
                     onSelectProject={setSelectedProjectId}
                     packages={packages}
+                    currentView={appView}
+                    onSwitchView={setAppView}
                 />
                 {showNewProjectModal && (
                     <NewProjectModal
@@ -2604,7 +2835,7 @@ export default function App() {
                         </button>
                     </div>
                     <nav style={styles.nav}>
-                        {['project', 'catalog', 'packages', 'reports'].map(t => (
+                        {['project', 'takeoff', 'catalog', 'packages', 'reports'].map(t => (
                             <button key={t} style={styles.navButton(tab === t)} onClick={() => setTab(t)}>{t.charAt(0).toUpperCase() + t.slice(1)}</button>
                         ))}
                     </nav>
@@ -2881,6 +3112,7 @@ export default function App() {
                                         compactMode={compactMode}
                                         onAddToCatalog={handleAddToCatalog}
                                         onUpdateFromCatalog={handleUpdateFromCatalog}
+                                        onUpdateToCatalog={handleUpdateToCatalog}
                                         catalogPkgs={packages}
                                         projectPkgs={effectivePackages}
                                         onReplaceItem={(itemIdx) => handleReplaceItem(itemIdx)}
@@ -2948,6 +3180,7 @@ export default function App() {
                                     compactMode={compactMode}
                                     onAddToCatalog={handleAddToCatalog}
                                     onUpdateFromCatalog={handleUpdateFromCatalog}
+                                    onUpdateToCatalog={handleUpdateToCatalog}
                                     catalogPkgs={packages}
                                     projectPkgs={effectivePackages}
                                     filterMode={viewMode === 'unfinished' ? 'unfinished' : undefined}
@@ -2961,11 +3194,30 @@ export default function App() {
                     </>
                 )}
 
+                {tab === 'takeoff' && (
+                    <TakeoffTab
+                        projectId={activeProjectId}
+                        storagePrefix={team ? team.id : session?.user?.id}
+                        locations={effectiveLocations || []}
+                        catalog={catalog}
+                        catalogPackages={packages}
+                        projectPackages={effectivePackages || []}
+                        takeoff={project.takeoff}
+                        onUpdateTakeoff={updateTakeoff}
+                        onUpdateItems={updateItems}
+                        onToast={showToast}
+                        readOnly={projectReadOnly || isViewingHistory}
+                        selectedLocationId={selected?.id}
+                    />
+                )}
+
                 {tab === 'catalog' && (
                     <section style={{
                         ...styles.content,
                         marginLeft: 0,
-                        ...(projectCatalogTab === 'components' ? { display: 'flex', flexDirection: 'column', overflow: 'hidden' } : {}),
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
                     }}>
                         <nav style={{ display: 'flex', gap: '4px', marginBottom: '16px', flexShrink: 0 }}>
                             <button style={styles.navButton(projectCatalogTab === 'components')} onClick={() => setProjectCatalogTab('components')}>Components</button>
@@ -2988,7 +3240,7 @@ export default function App() {
                         )}
                     </section>
                 )}
-                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0 }}><PackagesView catalogPackages={packages} projectPackages={effectivePackages || []} onUpsertCatalogPackage={upsertCatalogPackage} onDeleteCatalogPackage={deleteCatalogPackage} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={effectiveLocations || []} compactMode={compactMode} initialSelectedPkgId={editPackageId} onInitialPkgConsumed={() => setEditPackageId(null)} /></section>}
+                {tab === 'packages' && <section style={{ ...styles.content, marginLeft: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}><PackagesView catalogPackages={packages} projectPackages={effectivePackages || []} onUpsertCatalogPackage={upsertCatalogPackage} onDeleteCatalogPackage={deleteCatalogPackage} onUpdateProjectPackages={setProjectDirect} catalog={catalog} locations={effectiveLocations || []} compactMode={compactMode} initialSelectedPkgId={editPackageId} onInitialPkgConsumed={() => setEditPackageId(null)} /></section>}
                 {tab === 'reports' && (
                     <section style={{ ...styles.content, marginLeft: 0 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
@@ -3030,6 +3282,15 @@ export default function App() {
                                 <div style={styles.cardTitle}>Procore Estimating Import</div>
                                 <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Complete estimate with location sheets, labor, and phase codes.</p>
                                 <button style={styles.button('primary')} onClick={exportProcoreEstimate}><Icons.Download /> Export</button>
+                            </div>
+                            {/* Import from Esticom */}
+                            <div style={{ ...styles.card, border: '1px solid #2d4a6e' }}>
+                                <div style={styles.cardTitle}>Import from Esticom</div>
+                                <p style={{ color: '#8b98a5', fontSize: '14px', margin: '0 0 16px 0' }}>Load an Esticom estimate export (.xlsx) to <strong style={{ color: '#c9d1d9' }}>overwrite</strong> this project's locations as a starting point.</p>
+                                <label style={{ ...styles.button('primary'), display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                                    <Icons.Upload /> Import
+                                    <input type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style={{ display: 'none' }} onChange={e => { handleEsticomFile(e.target.files?.[0]); e.target.value = ''; }} />
+                                </label>
                             </div>
                         </div>
 
@@ -3160,23 +3421,26 @@ export default function App() {
                                                                     switch (col.id) {
                                                                         case 'qty': return <td key={col.id} style={bomTdStyle}>{fmtQty(b.totalQty)}</td>;
                                                                         case 'manufacturer': return <td key={col.id} style={bomTdStyle}>{b.manufacturer}</td>;
-                                                                        case 'model': return <td key={col.id} style={{ ...bomTdStyle, fontWeight: '600' }}>{b.model}</td>;
-                                                                        case 'partNumber': return <td key={col.id} style={{ ...bomTdStyle, fontSize: compactMode ? '10px' : '12px', color: '#8b98a5' }}>{b.partNumber}</td>;
-                                                                        case 'description': return <td key={col.id} style={bomTdStyle}>{b.description}</td>;
+                                                                        case 'model': return <td key={col.id} style={{ ...bomTdStyle, fontWeight: '600' }}>{bomEditingCell === b.key + '|model' ? <input type="text" value={bomEditingValue} onChange={e => setBomEditingValue(e.target.value)} onBlur={() => { updateConsolidatedTextField(b.key, 'model', bomEditingValue); setBomEditingCell(null); }} onKeyDown={e => { if (e.key === 'Enter') { updateConsolidatedTextField(b.key, 'model', bomEditingValue); setBomEditingCell(null); } }} onFocus={e => e.target.select()} style={{ ...bomInputStyle, width: '100%', textAlign: 'left', fontWeight: '600' }} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|model'); setBomEditingValue(b.model || ''); }} style={{ cursor: 'pointer', display: 'block' }}>{b.model || <span style={{ color: '#6e767d' }}>—</span>}</span>}</td>;
+                                                                        case 'partNumber': return <td key={col.id} style={{ ...bomTdStyle, fontSize: compactMode ? '10px' : '12px', color: '#8b98a5' }}>{bomEditingCell === b.key + '|partNumber' ? <input type="text" value={bomEditingValue} onChange={e => setBomEditingValue(e.target.value)} onBlur={() => { updateConsolidatedTextField(b.key, 'partNumber', bomEditingValue); setBomEditingCell(null); }} onKeyDown={e => { if (e.key === 'Enter') { updateConsolidatedTextField(b.key, 'partNumber', bomEditingValue); setBomEditingCell(null); } }} onFocus={e => e.target.select()} style={{ ...bomInputStyle, width: '100%', textAlign: 'left' }} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|partNumber'); setBomEditingValue(b.partNumber || ''); }} style={{ cursor: 'pointer', display: 'block' }}>{b.partNumber || <span style={{ color: '#6e767d' }}>—</span>}</span>}</td>;
+                                                                        case 'description': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|description' ? <input type="text" value={bomEditingValue} onChange={e => setBomEditingValue(e.target.value)} onBlur={() => { updateConsolidatedTextField(b.key, 'description', bomEditingValue); setBomEditingCell(null); }} onKeyDown={e => { if (e.key === 'Enter') { updateConsolidatedTextField(b.key, 'description', bomEditingValue); setBomEditingCell(null); } }} onFocus={e => e.target.select()} style={{ ...bomInputStyle, width: '100%', textAlign: 'left' }} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|description'); setBomEditingValue(b.description || ''); }} style={{ cursor: 'pointer', display: 'block' }}>{b.description || <span style={{ color: '#6e767d' }}>—</span>}</span>}</td>;
+                                                                        case 'vendor': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|vendor' ? <input type="text" value={bomEditingValue} onChange={e => updateConsolidatedTextField(b.key, 'vendor', e.target.value)} onBlur={() => setBomEditingCell(null)} onKeyDown={e => { if (e.key === 'Enter') setBomEditingCell(null); }} onFocus={e => e.target.select()} style={{ ...bomInputStyle, width: '100%', textAlign: 'left' }} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|vendor'); setBomEditingValue(b.vendor || ''); }} style={{ cursor: 'pointer', display: 'block' }}>{b.vendor || <span style={{ color: '#6e767d' }}>—</span>}</span>}</td>;
                                                                         case 'phase': return <td key={col.id} style={bomTdStyle}><select value={b.phase || ''} onChange={e => updateConsolidatedPhase(b.key, e.target.value)} style={{ ...styles.inputSmall, width: '100%', cursor: 'pointer', fontSize: compactMode ? '10px' : '11px' }}><option value="">—</option>{PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></td>;
                                                                         case 'unitCost': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|unitCost' ? <input type="text" inputMode="decimal" value={bomEditingValue} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) updateConsolidatedField(b.key, 'unitCost', v); }} onBlur={() => setBomEditingCell(null)} onKeyDown={e => { if (e.key === 'Enter') setBomEditingCell(null); }} onFocus={e => e.target.select()} style={bomInputStyle} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|unitCost'); setBomEditingValue(String(b.unitCost || 0)); }} style={{ cursor: 'pointer', display: 'block', textAlign: 'right' }}>{fmtCost(b.unitCost)}</span>}</td>;
                                                                         case 'laborHrsPerUnit': return <td key={col.id} style={bomTdStyle}>{bomEditingCell === b.key + '|laborHrsPerUnit' ? <input type="text" inputMode="decimal" value={bomEditingValue} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) updateConsolidatedField(b.key, 'laborHrsPerUnit', v); }} onBlur={() => setBomEditingCell(null)} onKeyDown={e => { if (e.key === 'Enter') setBomEditingCell(null); }} onFocus={e => e.target.select()} style={bomInputStyle} autoFocus /> : <span onClick={() => { setBomEditingCell(b.key + '|laborHrsPerUnit'); setBomEditingValue(String(b.laborHrsPerUnit || 0)); }} style={{ cursor: 'pointer', display: 'block', textAlign: 'right' }}>{fmtHrs(b.laborHrsPerUnit)}</span>}</td>;
                                                                         case 'extCost': return <td key={col.id} style={{ ...bomTdStyle, color: '#00ba7c', fontWeight: '600' }}>{fmtCost(b.totalQty * b.unitCost)}</td>;
                                                                         case 'extLabor': return <td key={col.id} style={bomTdStyle}>{fmtHrs(b.totalQty * b.laborHrsPerUnit)}</td>;
+                                                                        case 'actions': return <td key={col.id} style={bomTdStyle}><button title="Push this item's current values to the matching catalog entry" onClick={() => handleUpdateToCatalog(b)} style={{ ...styles.smallButton, padding: compactMode ? '2px 6px' : '4px 8px', fontSize: compactMode ? '10px' : '11px', color: '#1d9bf0' }}><Icons.Database /> Catalog</button></td>;
                                                                         default: return <td key={col.id} style={bomTdStyle}></td>;
                                                                     }
                                                                 })}
                                                             </tr>
                                                         ))}
                                                         <tr style={{ background: '#161b22', fontWeight: '700' }}>
-                                                            <td colSpan={bomCols.length - 2} style={{ ...bomTdStyle, textAlign: 'right' }}>TOTALS</td>
+                                                            <td colSpan={bomCols.length - 3} style={{ ...bomTdStyle, textAlign: 'right' }}>TOTALS</td>
                                                             <td style={{ ...bomTdStyle, color: '#00ba7c' }}>{fmtCost(totalCost)}</td>
                                                             <td style={bomTdStyle}>{fmtHrs(totalLabor)}</td>
+                                                            <td style={bomTdStyle}></td>
                                                         </tr>
                                                     </tbody>
                                                 </table>
@@ -3282,6 +3546,7 @@ export default function App() {
             {showDuplicate && (duplicateTarget || selected) && <DuplicateModal location={duplicateTarget || selected} onClose={() => { setShowDuplicate(false); setDuplicateTarget(null); }} onDuplicate={duplicateStructure} />}
             {showDelete && deleteTargets.length > 0 && <DeleteConfirmModal locations={deleteTargets} onClose={() => { setShowDelete(false); setDeleteTargets([]); setMultiSelectLocations([]); }} onDelete={deleteLocation} catalogPkgs={packages} projectPkgs={project.packages} />}
             {moveModalLocations && <MoveLocationModal locations={effectiveLocations} movingLocations={moveModalLocations} onMove={moveLocationTo} onClose={() => setMoveModalLocations(null)} />}
+            {esticomPreview && <ImportEsticomModal parsed={esticomPreview.parsed} fileName={esticomPreview.fileName} projectName={project.name} onApply={applyEsticomImport} onClose={() => setEsticomPreview(null)} />}
 
             {/* Revision Prompt Modal */}
             {showRevisionPrompt && (
